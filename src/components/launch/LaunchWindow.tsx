@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import styles from "./LaunchWindow.module.css";
 import { useScreenRecorder } from "../../hooks/useScreenRecorder";
 import { Button } from "../ui/button";
@@ -17,6 +17,14 @@ export function LaunchWindow() {
   const [elapsed, setElapsed] = useState(0);
   const [screenAudio, setScreenAudio] = useState(true);
   const [micEnabled, setMicEnabled] = useState(true);
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>("");
+  const [micLevel, setMicLevel] = useState(0);
+  
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationRef = useRef<number | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
@@ -65,16 +73,95 @@ export function LaunchWindow() {
     return () => clearInterval(interval);
   }, []);
 
-  // Save audio preferences whenever they change
+  // Enumerate mic devices
+  useEffect(() => {
+    async function getMicDevices() {
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const mics = devices.filter(d => d.kind === 'audioinput');
+        setMicDevices(mics);
+        if (mics.length > 0) {
+          setSelectedMicId(mics[0].deviceId);
+        }
+      } catch (e) {
+        console.warn('Failed to get mic devices:', e);
+      }
+    }
+    getMicDevices();
+  }, []);
+
+  // Audio visualizer
+  useEffect(() => {
+    if (micEnabled && !recording) {
+      startMicVisualizer();
+    } else {
+      stopMicVisualizer();
+    }
+    
+    return () => stopMicVisualizer();
+  }, [micEnabled, recording, selectedMicId]);
+
+  async function startMicVisualizer() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true 
+      });
+      micStreamRef.current = stream;
+      
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+      
+      source.connect(analyser);
+      
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      function updateLevel() {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        setMicLevel(Math.min(100, average * 1.5));
+        animationRef.current = requestAnimationFrame(updateLevel);
+      }
+      
+      updateLevel();
+    } catch (e) {
+      console.warn('Failed to start mic visualizer:', e);
+    }
+  }
+
+  function stopMicVisualizer() {
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    analyserRef.current = null;
+    setMicLevel(0);
+  }
+
+  // Save audio preferences
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.saveAudioPreferences({
         screenAudio,
         micEnabled,
-        micDeviceId: ''
+        micDeviceId: selectedMicId
       });
     }
-  }, [screenAudio, micEnabled]);
+  }, [screenAudio, micEnabled, selectedMicId]);
 
   const openSourceSelector = () => {
     if (window.electronAPI) {
@@ -84,25 +171,20 @@ export function LaunchWindow() {
 
   const openVideoFile = async () => {
     const result = await window.electronAPI.openVideoFilePicker();
-    
-    if (result.cancelled) {
-      return;
-    }
-    
+    if (result.cancelled) return;
     if (result.success && result.path) {
       await window.electronAPI.setCurrentVideoPath(result.path);
       await window.electronAPI.switchToEditor();
     }
   };
 
-  // IPC events for hide/close
   const sendHudOverlayHide = () => {
-    if (window.electronAPI && window.electronAPI.hudOverlayHide) {
+    if (window.electronAPI?.hudOverlayHide) {
       window.electronAPI.hudOverlayHide();
     }
   };
   const sendHudOverlayClose = () => {
-    if (window.electronAPI && window.electronAPI.hudOverlayClose) {
+    if (window.electronAPI?.hudOverlayClose) {
       window.electronAPI.hudOverlayClose();
     }
   };
@@ -110,7 +192,7 @@ export function LaunchWindow() {
   return (
     <div className="w-full h-full flex items-center bg-transparent">
       <div
-        className={`w-full max-w-[500px] mx-auto flex items-center justify-between px-4 py-2 ${styles.electronDrag}`}
+        className={`w-full max-w-[550px] mx-auto flex items-center justify-between px-4 py-2 ${styles.electronDrag}`}
         style={{
           borderRadius: 16,
           background: 'linear-gradient(135deg, rgba(30,30,40,0.92) 0%, rgba(20,20,30,0.85) 100%)',
@@ -121,7 +203,9 @@ export function LaunchWindow() {
           minHeight: 44,
         }}
       >
-        <div className={`flex items-center gap-1 ${styles.electronDrag}`}> <RxDragHandleDots2 size={18} className="text-white/40" /> </div>
+        <div className={`flex items-center gap-1 ${styles.electronDrag}`}> 
+          <RxDragHandleDots2 size={18} className="text-white/40" /> 
+        </div>
 
         <Button
           variant="link"
@@ -156,7 +240,7 @@ export function LaunchWindow() {
           size="icon"
           className={`${styles.electronNoDrag}`}
           onClick={() => setMicEnabled(!micEnabled)}
-          disabled={recording}
+          disabled={recording || micDevices.length === 0}
           title={micEnabled ? "Microphone On" : "Microphone Off"}
         >
           {micEnabled ? (
@@ -165,6 +249,36 @@ export function LaunchWindow() {
             <BiMicrophoneOff size={14} className="text-white/50" />
           )}
         </Button>
+
+        {micEnabled && !recording && (
+          <div className="flex items-center gap-0.5 h-6">
+            {[...Array(5)].map((_, i) => (
+              <div
+                key={i}
+                className="w-1 bg-green-400 rounded-full transition-all duration-75"
+                style={{
+                  height: `${Math.max(4, (micLevel / 100) * 20 * (i + 1) / 2)}px`,
+                  opacity: micLevel > i * 15 ? 1 : 0.3
+                }}
+              />
+            ))}
+          </div>
+        )}
+
+        {micEnabled && micDevices.length > 1 && (
+          <select
+            value={selectedMicId}
+            onChange={(e) => setSelectedMicId(e.target.value)}
+            disabled={recording}
+            className="text-xs bg-zinc-800 text-zinc-200 border border-zinc-700 rounded px-1 py-0.5 max-w-[100px]"
+          >
+            {micDevices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Mic ${device.deviceId.slice(0, 6)}`}
+              </option>
+            ))}
+          </select>
+        )}
 
         <div className="w-px h-6 bg-white/30" />
 
@@ -187,10 +301,8 @@ export function LaunchWindow() {
             </>
           )}
         </Button>
-        
 
         <div className="w-px h-6 bg-white/30" />
-
 
         <Button
           variant="link"
@@ -203,7 +315,6 @@ export function LaunchWindow() {
           <span className={styles.folderText}>Open</span>
         </Button>
 
-         {/* Separator before hide/close buttons */}
         <div className="w-px h-6 bg-white/30 mx-2" />
         <Button
           variant="link"
@@ -213,7 +324,6 @@ export function LaunchWindow() {
           onClick={sendHudOverlayHide}
         >
           <FiMinus size={18} style={{ color: '#fff', opacity: 0.7 }} />
-          
         </Button>
 
         <Button

@@ -298,6 +298,18 @@ function registerIpcHandlers(createEditorWindow2, createSourceSelectorWindow2, g
   ipcMain.handle("get-platform", () => {
     return process.platform;
   });
+  let audioPreferences = {
+    screenAudio: true,
+    micEnabled: true,
+    micDeviceId: ""
+  };
+  ipcMain.handle("save-audio-preferences", (_, preferences) => {
+    audioPreferences = preferences;
+    return { success: true };
+  });
+  ipcMain.handle("get-audio-preferences", () => {
+    return audioPreferences;
+  });
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDINGS_DIR = path.join(app.getPath("userData"), "recordings");

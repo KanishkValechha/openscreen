@@ -59,5 +59,11 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   },
   getPlatform: () => {
     return electron.ipcRenderer.invoke("get-platform");
+  },
+  saveAudioPreferences: (preferences) => {
+    return electron.ipcRenderer.invoke("save-audio-preferences", preferences);
+  },
+  getAudioPreferences: () => {
+    return electron.ipcRenderer.invoke("get-audio-preferences");
   }
 });

@@ -118,11 +118,18 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
       // Get screen stream (video + optional system audio)
       let mediaStream = await (navigator.mediaDevices as any).getUserMedia(constraints);
 
-      // Add mic if enabled - use simple approach, just request any mic
+      // Add mic if enabled - use specific device ID if provided
       if (audioPrefs.micEnabled) {
         try {
-          // Request any available microphone
-          const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const micConstraints: any = { audio: true };
+          // Use specific mic device if selected
+          if (audioPrefs.micDeviceId) {
+            micConstraints.audio = {
+              deviceId: { exact: audioPrefs.micDeviceId }
+            };
+          }
+          console.log('[useScreenRecorder] Requesting mic with constraints:', micConstraints);
+          const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
           const micTracks = micStream.getAudioTracks();
           console.log('[useScreenRecorder] Mic tracks found:', micTracks.length);
           micTracks.forEach((track: MediaStreamTrack) => {
