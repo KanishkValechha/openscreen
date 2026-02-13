@@ -2,18 +2,21 @@ import { useState, useEffect } from "react";
 import styles from "./LaunchWindow.module.css";
 import { useScreenRecorder } from "../../hooks/useScreenRecorder";
 import { Button } from "../ui/button";
-import { BsRecordCircle } from "react-icons/bs";
+import { BsRecordCircle, BsFillSpeakerFill, BsFillVolumeMuteFill } from "react-icons/bs";
 import { FaRegStopCircle } from "react-icons/fa";
 import { MdMonitor } from "react-icons/md";
 import { RxDragHandleDots2 } from "react-icons/rx";
 import { FaFolderMinus } from "react-icons/fa6";
 import { FiMinus, FiX } from "react-icons/fi";
 import { ContentClamp } from "../ui/content-clamp";
+import { BiMicrophone, BiMicrophoneOff } from "react-icons/bi";
 
 export function LaunchWindow() {
   const { recording, toggleRecording } = useScreenRecorder();
   const [recordingStart, setRecordingStart] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [screenAudio, setScreenAudio] = useState(true);
+  const [micEnabled, setMicEnabled] = useState(true);
 
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
@@ -61,6 +64,17 @@ export function LaunchWindow() {
     const interval = setInterval(checkSelectedSource, 500);
     return () => clearInterval(interval);
   }, []);
+
+  // Save audio preferences whenever they change
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.saveAudioPreferences({
+        screenAudio,
+        micEnabled,
+        micDeviceId: ''
+      });
+    }
+  }, [screenAudio, micEnabled]);
 
   const openSourceSelector = () => {
     if (window.electronAPI) {
@@ -118,6 +132,38 @@ export function LaunchWindow() {
         >
           <MdMonitor size={14} className="text-white" />
           <ContentClamp truncateLength={6}>{selectedSource}</ContentClamp>
+        </Button>
+
+        <div className="w-px h-6 bg-white/30" />
+
+        <Button
+          variant="link"
+          size="icon"
+          className={`${styles.electronNoDrag}`}
+          onClick={() => setScreenAudio(!screenAudio)}
+          disabled={recording}
+          title={screenAudio ? "System Audio On" : "System Audio Off"}
+        >
+          {screenAudio ? (
+            <BsFillSpeakerFill size={14} className="text-green-400" />
+          ) : (
+            <BsFillVolumeMuteFill size={14} className="text-white/50" />
+          )}
+        </Button>
+
+        <Button
+          variant="link"
+          size="icon"
+          className={`${styles.electronNoDrag}`}
+          onClick={() => setMicEnabled(!micEnabled)}
+          disabled={recording}
+          title={micEnabled ? "Microphone On" : "Microphone Off"}
+        >
+          {micEnabled ? (
+            <BiMicrophone size={14} className="text-green-400" />
+          ) : (
+            <BiMicrophoneOff size={14} className="text-white/50" />
+          )}
         </Button>
 
         <div className="w-px h-6 bg-white/30" />
