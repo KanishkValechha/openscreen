@@ -106,8 +106,8 @@ export class VideoExporter {
       // Initialize video encoder
       await this.initializeEncoder();
 
-      // Initialize muxer
-      this.muxer = new VideoMuxer(this.config, false);
+      // Initialize muxer - pass hasAudio from videoInfo
+      this.muxer = new VideoMuxer(this.config, videoInfo.hasAudio);
       await this.muxer.initialize();
 
       // Get the video element for frame extraction
