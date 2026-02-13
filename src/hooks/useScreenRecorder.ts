@@ -12,6 +12,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
   const stream = useRef<MediaStream | null>(null);
   const chunks = useRef<Blob[]>([]);
   const startTime = useRef<number>(0);
+  const audioPreferences = useRef<{ screenAudio: boolean; micEnabled: boolean; micDeviceId: string }>({
+    screenAudio: false,
+    micEnabled: false,
+    micDeviceId: ""
+  });
 
   // Target visually lossless 4K @ 60fps; fall back gracefully when hardware cannot keep up
   const TARGET_FRAME_RATE = 60;
@@ -87,19 +92,44 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         return;
       }
 
-      const mediaStream = await (navigator.mediaDevices as any).getUserMedia({
-        audio: false,
-        video: {
-          mandatory: {
-            chromeMediaSource: "desktop",
-            chromeMediaSourceId: selectedSource.id,
-            maxWidth: TARGET_WIDTH,
-            maxHeight: TARGET_HEIGHT,
-            maxFrameRate: TARGET_FRAME_RATE,
-            minFrameRate: 30,
-          },
+      const prefs = await window.electronAPI.getAudioPreferences();
+      audioPreferences.current = prefs;
+
+      const audioConstraints: any = prefs.screenAudio ? {
+        mandatory: {
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: selectedSource.id,
         },
+      } : false;
+      
+      const videoConstraints: any = {
+        mandatory: {
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: selectedSource.id,
+          maxWidth: TARGET_WIDTH,
+          maxHeight: TARGET_HEIGHT,
+          maxFrameRate: TARGET_FRAME_RATE,
+          minFrameRate: 30,
+        },
+      };
+
+      let mediaStream = await (navigator.mediaDevices as any).getUserMedia({
+        audio: audioConstraints,
+        video: videoConstraints,
       });
+
+      if (prefs.micEnabled && prefs.micDeviceId) {
+        try {
+          const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { deviceId: { exact: prefs.micDeviceId } }
+          });
+          micStream.getAudioTracks().forEach(track => {
+            mediaStream.addTrack(track);
+          });
+        } catch (micError) {
+          console.warn("Failed to add microphone:", micError);
+        }
+      }
       stream.current = mediaStream;
       if (!stream.current) {
         throw new Error("Media stream is not available.");
