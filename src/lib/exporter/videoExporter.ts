@@ -38,6 +38,7 @@ export class VideoExporter {
   // Track muxing promises for parallel processing
   private muxingPromises: Promise<void>[] = [];
   private chunkCount = 0;
+  private hasAudio = false;
 
   constructor(config: VideoExporterConfig) {
     this.config = config;
@@ -107,13 +108,19 @@ export class VideoExporter {
       await this.initializeEncoder();
 
       // Initialize muxer
-      this.muxer = new VideoMuxer(this.config, false);
+      this.hasAudio = !!(this.config.hasAudio && videoInfo.hasAudio);
+      this.muxer = new VideoMuxer(this.config, this.hasAudio);
       await this.muxer.initialize();
 
       // Get the video element for frame extraction
       const videoElement = this.decoder.getVideoElement();
       if (!videoElement) {
         throw new Error('Video element not available');
+      }
+
+      // If we have audio, capture it via MediaStream
+      if (this.hasAudio) {
+        this.captureAudioFromVideo(videoElement);
       }
 
       // Calculate effective duration and frame count (excluding trim regions)
@@ -216,6 +223,11 @@ export class VideoExporter {
       // Finalize encoding
       if (this.encoder && this.encoder.state === 'configured') {
         await this.encoder.flush();
+      }
+
+      // Finalize audio encoding
+      if (this.hasAudio && this.audioMediaRecorder && this.audioMediaRecorder.state === 'recording') {
+        this.audioMediaRecorder.stop();
       }
 
       // Wait for all muxing operations to complete
@@ -333,6 +345,101 @@ export class VideoExporter {
     }
   }
 
+  private audioEncoder: AudioEncoder | null = null;
+  private audioStream: MediaStream | null = null;
+  private audioMediaRecorder: MediaRecorder | null = null;
+  private audioChunks: Blob[] = [];
+
+  private captureAudioFromVideo(videoElement: HTMLVideoElement): void {
+    if (!this.hasAudio) return;
+
+    // Capture audio from video element
+    try {
+      // Create a stream from the video element that includes audio
+      this.audioStream = (videoElement as any).captureStream ? 
+        (videoElement as any).captureStream() : null;
+      
+      if (!this.audioStream) {
+        console.warn('[VideoExporter] Video does not support captureStream');
+        this.hasAudio = false;
+        return;
+      }
+
+      const audioTracks = this.audioStream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        console.warn('[VideoExporter] No audio tracks found in video');
+        this.hasAudio = false;
+        return;
+      }
+
+      // Create a new stream with just audio
+      const audioOnlyStream = new MediaStream(audioTracks);
+
+      // Set up audio encoder
+      this.setupAudioEncoder();
+
+      // Use MediaRecorder to capture audio
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 
+        'audio/webm;codecs=opus' : 'audio/webm';
+
+      this.audioMediaRecorder = new MediaRecorder(audioOnlyStream, {
+        mimeType,
+        audioBitsPerSecond: 128000,
+      });
+
+      this.audioMediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          this.audioChunks.push(e.data);
+        }
+      };
+
+      this.audioMediaRecorder.start(100);
+    } catch (error) {
+      console.error('[VideoExporter] Error capturing audio:', error);
+      this.hasAudio = false;
+    }
+  }
+
+  private async setupAudioEncoder(): Promise<void> {
+    const SAMPLE_RATE = 48000;
+    const CHANNELS = 2;
+
+    this.audioEncoder = new AudioEncoder({
+      output: async (chunk, meta) => {
+        if (!this.muxer || !this.hasAudio) return;
+        
+        try {
+          await this.muxer.addAudioChunk(chunk, meta);
+        } catch (error) {
+          console.error('[VideoExporter] Audio muxing error:', error);
+        }
+      },
+      error: (error) => {
+        console.error('[VideoExporter] Audio encoder error:', error);
+      },
+    });
+
+    const audioConfig: AudioEncoderConfig = {
+      codec: 'mp4a.40.2',
+      sampleRate: SAMPLE_RATE,
+      numberOfChannels: CHANNELS,
+      bitrate: 128000,
+    };
+
+    const support = await AudioEncoder.isConfigSupported(audioConfig);
+    if (!support.supported) {
+      console.warn('[VideoExporter] AAC encoding not supported');
+      this.hasAudio = false;
+      if (this.audioEncoder) {
+        this.audioEncoder.close();
+        this.audioEncoder = null;
+      }
+      return;
+    }
+
+    this.audioEncoder.configure(audioConfig);
+  }
+
   cancel(): void {
     this.cancelled = true;
     this.cleanup();
@@ -366,6 +473,33 @@ export class VideoExporter {
         console.warn('Error destroying renderer:', e);
       }
       this.renderer = null;
+    }
+
+    if (this.audioEncoder) {
+      try {
+        if (this.audioEncoder.state === 'configured') {
+          this.audioEncoder.close();
+        }
+      } catch (e) {
+        console.warn('Error closing audio encoder:', e);
+      }
+      this.audioEncoder = null;
+    }
+
+    if (this.audioMediaRecorder) {
+      try {
+        if (this.audioMediaRecorder.state === 'recording') {
+          this.audioMediaRecorder.stop();
+        }
+      } catch (e) {
+        console.warn('Error stopping audio recorder:', e);
+      }
+      this.audioMediaRecorder = null;
+    }
+
+    if (this.audioStream) {
+      this.audioStream.getTracks().forEach(track => track.stop());
+      this.audioStream = null;
     }
 
     this.muxer = null;

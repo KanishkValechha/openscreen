@@ -4,6 +4,13 @@ export interface ExportConfig {
   frameRate: number;
   bitrate: number;
   codec?: string;
+  hasAudio?: boolean;
+  audioCodec?: string;
+}
+
+export interface AudioFrameData {
+  data: AudioData;
+  timestamp: number;
 }
 
 export interface ExportProgress {

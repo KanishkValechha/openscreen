@@ -21,6 +21,7 @@ interface VideoPlaybackProps {
   currentTime: number;
   onPlayStateChange: (playing: boolean) => void;
   onError: (error: string) => void;
+  onAudioTrackChange?: (hasAudio: boolean) => void;
   wallpaper?: string;
   zoomRegions: ZoomRegion[];
   selectedZoomId: string | null;
@@ -60,6 +61,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   currentTime,
   onPlayStateChange,
   onError,
+  onAudioTrackChange,
   wallpaper,
   zoomRegions,
   selectedZoomId,
@@ -706,6 +708,15 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const video = e.currentTarget;
     onDurationChange(video.duration);
+    
+    // Check for audio tracks using HTMLMediaElement method
+    const hasAudio = (video as any).mozHasAudio || 
+                     (video as any).webkitAudioDecodedByteCount > 0 ||
+                     (video as any).audioTracks?.length > 0;
+    if (onAudioTrackChange) {
+      onAudioTrackChange(hasAudio);
+    }
+    
     video.currentTime = 0;
     video.pause();
     allowPlaybackRef.current = false;

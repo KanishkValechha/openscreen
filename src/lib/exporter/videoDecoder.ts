@@ -4,6 +4,7 @@ export interface DecodedVideoInfo {
   duration: number; // in seconds
   frameRate: number;
   codec: string;
+  hasAudio?: boolean;
 }
 
 export class VideoFileDecoder {
@@ -16,15 +17,26 @@ export class VideoFileDecoder {
     this.videoElement.preload = 'metadata';
 
     return new Promise((resolve, reject) => {
-      this.videoElement!.addEventListener('loadedmetadata', () => {
+      this.videoElement!.addEventListener('loadedmetadata', async () => {
         const video = this.videoElement!;
         
+        // Check if the video has audio tracks
+        let hasAudio = false;
+        try {
+          const audioTracks = (video as any).audioTracks;
+          hasAudio = audioTracks && audioTracks.length > 0;
+        } catch {
+          // Some browsers don't support audioTracks
+          hasAudio = false;
+        }
+
         this.info = {
           width: video.videoWidth,
           height: video.videoHeight,
           duration: video.duration,
           frameRate: 60,
           codec: 'avc1.640033',
+          hasAudio,
         };
 
         resolve(this.info);
