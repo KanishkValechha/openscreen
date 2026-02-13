@@ -91,8 +91,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
       const audioPrefs = await window.electronAPI.getAudioPreferences();
       console.log('[useScreenRecorder] Audio prefs:', audioPrefs);
 
-      // Get screen stream first (video + system audio)
-      const screenConstraints: any = {
+      // Step 1: Get screen video ONLY (no audio yet)
+      const videoConstraints: any = {
         video: {
           mandatory: {
             chromeMediaSource: "desktop",
@@ -105,20 +105,32 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         },
       };
 
-      // Add system audio if enabled
+      console.log('[useScreenRecorder] Getting screen video stream');
+      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(videoConstraints);
+
+      // Step 2: Add system audio if enabled
       if (audioPrefs.screenAudio) {
-        screenConstraints.audio = {
-          mandatory: {
-            chromeMediaSource: "desktop",
-            chromeMediaSourceId: selectedSource.id,
-          },
-        };
+        try {
+          const sysAudioConstraints: any = {
+            audio: {
+              mandatory: {
+                chromeMediaSource: "desktop",
+                chromeMediaSourceId: selectedSource.id,
+              },
+            },
+          };
+          console.log('[useScreenRecorder] Getting system audio stream');
+          const sysAudioStream = await (navigator.mediaDevices as any).getUserMedia(sysAudioConstraints);
+          sysAudioStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
+            console.log('[useScreenRecorder] Adding system audio track:', track.label);
+            mediaStream.addTrack(track);
+          });
+        } catch (sysError) {
+          console.error('[useScreenRecorder] Failed to get system audio:', sysError);
+        }
       }
 
-      console.log('[useScreenRecorder] Getting screen stream with audio:', audioPrefs.screenAudio);
-      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(screenConstraints);
-
-      // Add mic separately if enabled - this is more reliable than trying to do both together
+      // Step 3: Add mic if enabled
       if (audioPrefs.micEnabled) {
         try {
           const micConstraints: MediaStreamConstraints = audioPrefs.micDeviceId ? 
