@@ -87,12 +87,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         return;
       }
 
-      // Get audio preferences
       const audioPrefs = await window.electronAPI.getAudioPreferences();
       console.log('[useScreenRecorder] Audio prefs:', audioPrefs);
 
-      // Step 1: Get screen video ONLY (no audio yet)
-      const videoConstraints: any = {
+      // Build combined constraints for video + system audio
+      const constraints: any = {
         video: {
           mandatory: {
             chromeMediaSource: "desktop",
@@ -105,42 +104,36 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         },
       };
 
-      console.log('[useScreenRecorder] Getting screen video stream');
-      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(videoConstraints);
-
-      // Step 2: Add system audio if enabled
+      // Add system audio to the same request if enabled
       if (audioPrefs.screenAudio) {
-        try {
-          const sysAudioConstraints: any = {
-            audio: {
-              mandatory: {
-                chromeMediaSource: "desktop",
-                chromeMediaSourceId: selectedSource.id,
-              },
-            },
-          };
-          console.log('[useScreenRecorder] Getting system audio stream');
-          const sysAudioStream = await (navigator.mediaDevices as any).getUserMedia(sysAudioConstraints);
-          sysAudioStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
-            console.log('[useScreenRecorder] Adding system audio track:', track.label);
-            mediaStream.addTrack(track);
-          });
-        } catch (sysError) {
-          console.error('[useScreenRecorder] Failed to get system audio:', sysError);
-        }
+        constraints.audio = {
+          mandatory: {
+            chromeMediaSource: "desktop",
+            chromeMediaSourceId: selectedSource.id,
+          },
+        };
       }
 
-      // Step 3: Add mic if enabled
+      console.log('[useScreenRecorder] Getting screen with audio');
+      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(constraints);
+
+      // Log initial tracks
+      console.log('[useScreenRecorder] Initial stream tracks:');
+      mediaStream.getTracks().forEach((track: MediaStreamTrack, i: number) => {
+        console.log(`  Track ${i}: ${track.kind} - "${track.label}"`);
+      });
+
+      // Add mic separately if enabled
       if (audioPrefs.micEnabled) {
         try {
           const micConstraints: MediaStreamConstraints = audioPrefs.micDeviceId ? 
             { audio: { deviceId: { exact: audioPrefs.micDeviceId } } } : 
             { audio: true };
           
-          console.log('[useScreenRecorder] Getting mic stream');
+          console.log('[useScreenRecorder] Getting mic audio');
           const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
           micStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
-            console.log('[useScreenRecorder] Adding mic track:', track.label);
+            console.log('[useScreenRecorder] Adding mic track:', track.label, track.getSettings());
             mediaStream.addTrack(track);
           });
         } catch (micError) {
@@ -148,12 +141,16 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         }
       }
 
-      // Log final stream
+      // Log final stream - all tracks
       console.log('[useScreenRecorder] Final stream tracks:');
+      const audioTracks = mediaStream.getAudioTracks();
+      console.log(`  Total audio tracks: ${audioTracks.length}`);
       mediaStream.getTracks().forEach((track: MediaStreamTrack, i: number) => {
-        console.log(`  Track ${i}: ${track.kind} - "${track.label}"`);
+        const settings = track.getSettings();
+        console.log(`  Track ${i}: ${track.kind} - "${track.label}" (enabled: ${track.enabled}, settings: ${JSON.stringify(settings)})`);
       });
 
+      // Get video track and apply constraints first
       stream.current = mediaStream;
       if (!stream.current) {
         throw new Error("Media stream is not available.");
@@ -167,6 +164,32 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         });
       } catch (error) {
         console.warn("Unable to lock 4K/60fps constraints, using best available track settings.", error);
+      }
+
+      // If we have both system audio and mic, we need to mix them using Web Audio API
+      // because MediaRecorder often only captures the first audio track
+      let recordingStream = mediaStream;
+      
+      if (audioPrefs.screenAudio && audioPrefs.micEnabled && audioTracks.length >= 2) {
+        console.log('[useScreenRecorder] Mixing audio tracks using Web Audio API');
+        try {
+          const audioContext = new AudioContext();
+          const destination = audioContext.createMediaStreamDestination();
+          
+          // Connect all audio tracks to the destination
+          for (const track of audioTracks) {
+            const source = audioContext.createMediaStreamSource(new MediaStream([track]));
+            source.connect(destination);
+          }
+          
+          // Create new stream with video + mixed audio
+          recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
+          
+          console.log('[useScreenRecorder] Mixed audio stream tracks:', recordingStream.getAudioTracks().length);
+        } catch (mixError) {
+          console.error('[useScreenRecorder] Failed to mix audio:', mixError);
+          recordingStream = mediaStream;
+        }
       }
 
       let { width = 1920, height = 1080, frameRate = TARGET_FRAME_RATE } = videoTrack.getSettings();
@@ -184,8 +207,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         )} Mbps`
       );
       
+      // Use the recordingStream (which may have mixed audio)
+      stream.current = recordingStream;
+      
       chunks.current = [];
-      const recorder = new MediaRecorder(stream.current, {
+      const recorder = new MediaRecorder(recordingStream, {
         mimeType,
         videoBitsPerSecond,
       });
