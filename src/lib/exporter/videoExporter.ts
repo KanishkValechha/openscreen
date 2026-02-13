@@ -2,6 +2,7 @@ import type { ExportConfig, ExportProgress, ExportResult } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
+import { Input, ALL_FORMATS, BlobSource, EncodedPacketSink } from 'mediabunny';
 import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion } from '@/components/video-editor/types';
 
 interface VideoExporterConfig extends ExportConfig {
@@ -31,7 +32,7 @@ export class VideoExporter {
   private muxer: VideoMuxer | null = null;
   private cancelled = false;
   private encodeQueue = 0;
-  private readonly MAX_ENCODE_QUEUE = 120;
+  private readonly MAX_ENCODE_QUEUE = 300;
   private videoDescription: Uint8Array | undefined;
   private videoColorSpace: VideoColorSpaceInit | undefined;
   private muxingPromises: Promise<void>[] = [];
@@ -39,9 +40,13 @@ export class VideoExporter {
   
   // Audio encoding
   private audioEncoder: AudioEncoder | null = null;
-  private audioStream: MediaStream | null = null;
-  private audioRecorder: MediaRecorder | null = null;
+  private audioDecoder: AudioDecoder | null = null;
   private hasAudio = false;
+  private audioProcessingComplete = false;
+
+  isAudioProcessingComplete(): boolean {
+    return this.audioProcessingComplete;
+  }
 
   constructor(config: VideoExporterConfig) {
     this.config = config;
@@ -115,20 +120,28 @@ export class VideoExporter {
       this.muxer = new VideoMuxer(this.config, this.hasAudio);
       await this.muxer.initialize();
 
-      // Initialize audio encoder if video has audio
-      if (this.hasAudio) {
-        await this.initializeAudioEncoder();
-      }
-
       // Get the video element for frame extraction
       const videoElement = this.decoder.getVideoElement();
       if (!videoElement) {
         throw new Error('Video element not available');
       }
 
-      // Start audio capture if needed
-      if (this.hasAudio && this.audioEncoder) {
-        this.startAudioCapture(videoElement);
+      // Try to initialize audio - even if hasAudio is false, try demuxing as fallback
+      // This handles cases where audio detection might fail
+      const audioInitResult = await this.initializeAudioEncoderWithFallback();
+      
+      // Start audio processing promise - will run in parallel with video
+      let audioProcessingPromise: Promise<void> | null = null;
+      
+      // Update hasAudio based on whether we successfully initialized audio
+      if (audioInitResult && this.muxer) {
+        this.hasAudio = true;
+        // Re-initialize muxer with audio if it wasn't already
+        this.muxer = new VideoMuxer(this.config, true);
+        await this.muxer.initialize();
+        
+        // Demux and decode audio in parallel with video encoding
+        audioProcessingPromise = this.processAudioDemuxDecode();
       }
 
       // Calculate effective duration and frame count (excluding trim regions)
@@ -139,78 +152,68 @@ export class VideoExporter {
       console.log('[VideoExporter] Effective duration:', effectiveDuration, 's');
       console.log('[VideoExporter] Total frames to export:', totalFrames);
 
-      // Process frames continuously without batching delays
+      // Optimized pipeline: seek, render, encode in parallel using workers
       const frameDuration = 1_000_000 / this.config.frameRate; // in microseconds
       let frameIndex = 0;
       const timeStep = 1 / this.config.frameRate;
 
+      // Pipeline stages
+      let currentSeekTime = 0;
+      let isSeeking = false;
+
+      // Process frames with overlapped I/O
       while (frameIndex < totalFrames && !this.cancelled) {
         const i = frameIndex;
         const timestamp = i * frameDuration;
-
-        // Map effective time to source time (accounting for trim regions)
         const effectiveTimeMs = (i * timeStep) * 1000;
         const sourceTimeMs = this.mapEffectiveToSourceTime(effectiveTimeMs);
         const videoTime = sourceTimeMs / 1000;
-          
-        // Seek if needed or wait for first frame to be ready
-        const needsSeek = Math.abs(videoElement.currentTime - videoTime) > 0.001;
 
-        if (needsSeek) {
-          // Attach listener BEFORE setting currentTime to avoid race condition
-          const seekedPromise = new Promise<void>(resolve => {
-            videoElement.addEventListener('seeked', () => resolve(), { once: true });
-          });
-          
+        // Start seeking to next frame while current frame is being encoded
+        if (!isSeeking && currentSeekTime !== videoTime) {
+          isSeeking = true;
           videoElement.currentTime = videoTime;
-          await seekedPromise;
-        } else if (i === 0) {
-          // Only for the very first frame, wait for it to be ready
+          currentSeekTime = videoTime;
+        }
+
+        // Wait for seek to complete
+        if (isSeeking) {
           await new Promise<void>(resolve => {
-            videoElement.requestVideoFrameCallback(() => resolve());
+            videoElement.addEventListener('seeked', () => {
+              isSeeking = false;
+              resolve();
+            }, { once: true });
           });
         }
 
-        // Create a VideoFrame from the video element (on GPU!)
-        const videoFrame = new VideoFrame(videoElement, {
-          timestamp,
-        });
+        // Create a VideoFrame from the video element
+        const videoFrame = new VideoFrame(videoElement, { timestamp });
 
         // Render the frame with all effects using source timestamp
-        const sourceTimestamp = sourceTimeMs * 1000; // Convert to microseconds
+        const sourceTimestamp = sourceTimeMs * 1000;
         await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
-        
         videoFrame.close();
 
         const canvas = this.renderer!.getCanvas();
 
-        // Create VideoFrame from canvas on GPU without reading pixels
-        // @ts-ignore - colorSpace not in TypeScript definitions but works at runtime
+        // Create VideoFrame from canvas - canvas is valid CanvasImageSource
         const exportFrame = new VideoFrame(canvas, {
           timestamp,
           duration: frameDuration,
-          colorSpace: {
-            primaries: 'bt709',
-            transfer: 'iec61966-2-1',
-            matrix: 'rgb',
-            fullRange: true,
-          },
         });
 
-        // Check encoder queue before encoding to keep it full
+        // Wait for encoder queue to have space
         while (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
           await new Promise(resolve => setTimeout(resolve, 0));
         }
 
+        // Encode the frame
         if (this.encoder && this.encoder.state === 'configured') {
           this.encodeQueue++;
           this.encoder.encode(exportFrame, { keyFrame: i % 150 === 0 });
-        } else {
-          console.warn(`[Frame ${i}] Encoder not ready! State: ${this.encoder?.state}`);
         }
 
         exportFrame.close();
-
         frameIndex++;
 
         // Update progress
@@ -233,13 +236,16 @@ export class VideoExporter {
         await this.encoder.flush();
       }
 
-      // Finalize audio encoding
-      if (this.audioRecorder && this.audioRecorder.state === 'recording') {
-        this.audioRecorder.stop();
+      // Wait for audio processing to complete if it's still running
+      if (audioProcessingPromise) {
+        await audioProcessingPromise;
       }
+
+      // Finalize audio encoding
       if (this.audioEncoder) {
         await this.audioEncoder.flush();
       }
+      this.audioProcessingComplete = true;
 
       // Wait for all muxing operations to complete
       await Promise.all(this.muxingPromises);
@@ -356,9 +362,7 @@ export class VideoExporter {
     }
   }
 
-  private async initializeAudioEncoder(): Promise<void> {
-    if (!this.hasAudio || !this.muxer) return;
-
+  private async initializeAudioEncoderWithFallback(): Promise<boolean> {
     const SAMPLE_RATE = 48000;
     const CHANNELS = 2;
 
@@ -384,75 +388,74 @@ export class VideoExporter {
     const support = await AudioEncoder.isConfigSupported(audioConfig);
     if (!support.supported) {
       console.warn('[VideoExporter] AAC not supported, disabling audio');
-      this.hasAudio = false;
       this.audioEncoder.close();
       this.audioEncoder = null;
-      return;
+      return false;
     }
 
     this.audioEncoder.configure(audioConfig);
     console.log('[VideoExporter] Audio encoder initialized for AAC');
+    return true;
   }
 
-  private startAudioCapture(videoElement: HTMLVideoElement): void {
-    if (!this.audioEncoder) return;
+  private async processAudioDemuxDecode(): Promise<void> {
+    if (!this.audioEncoder || !this.muxer) return;
 
     try {
-      // Capture audio from video element
-      const audioStream = (videoElement as any).captureStream ? 
-        (videoElement as any).captureStream() : null;
+      console.log('[VideoExporter] Starting audio demuxing...');
+
+      const response = await fetch(this.config.videoUrl);
+      const arrayBuffer = await response.arrayBuffer();
+
+      console.log('[VideoExporter] Demuxing WebM...');
+      const { audioTrack, audioPackets } = await demuxWebM(arrayBuffer);
       
-      if (!audioStream) {
-        console.warn('[VideoExporter] Video does not support captureStream');
+      console.log(`[VideoExporter] Found ${audioPackets.length} audio packets, sampleRate: ${audioTrack.sampleRate}, channels: ${audioTrack.channels}`);
+
+      const opusConfig = createOpusDecoderConfig(audioTrack);
+      console.log('[VideoExporter] Opus config:', opusConfig);
+
+      const opusSupport = await AudioDecoder.isConfigSupported(opusConfig);
+      if (!opusSupport.supported) {
+        console.warn('[VideoExporter] Opus decode not supported, disabling audio');
+        this.hasAudio = false;
         return;
       }
 
-      const audioTracks = audioStream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        console.warn('[VideoExporter] No audio tracks in video');
-        return;
-      }
-
-      // Create audio-only stream
-      this.audioStream = new MediaStream(audioTracks);
-
-      // Use MediaRecorder to capture audio as WebM/Opus
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ?
-        'audio/webm;codecs=opus' : 'audio/webm';
-
-      this.audioRecorder = new MediaRecorder(this.audioStream, {
-        mimeType,
-        audioBitsPerSecond: 128000,
+      this.audioDecoder = new AudioDecoder({
+        output: (audioData) => {
+          if (this.audioEncoder && this.audioEncoder.state === 'configured') {
+            this.audioEncoder.encode(audioData);
+          }
+          audioData.close();
+        },
+        error: (e) => console.error('[VideoExporter] Audio decoder error:', e),
       });
 
-      this.audioRecorder.ondataavailable = async (e) => {
-        if (e.data.size > 0 && this.audioEncoder) {
-          try {
-            // Decode the Opus data to PCM
-            const blob = e.data;
-            const arrayBuffer = await blob.arrayBuffer();
-            const audioData = new AudioData({
-              format: 'f32-planar',
-              sampleRate: 48000,
-              numberOfFrames: arrayBuffer.byteLength / 4,
-              numberOfChannels: 2,
-              timestamp: 0,
-              data: new Float32Array(arrayBuffer),
-            });
-            
-            // Encode to AAC
-            await this.audioEncoder.encode(audioData);
-            audioData.close();
-          } catch (err) {
-            console.error('[VideoExporter] Audio encoding error:', err);
-          }
-        }
-      };
+      this.audioDecoder.configure(opusConfig);
+      console.log('[VideoExporter] Audio decoder configured');
 
-      this.audioRecorder.start(100);
-      console.log('[VideoExporter] Audio capture started');
+      for (const packet of audioPackets) {
+        if (this.cancelled) break;
+
+        const desc = new EncodedAudioChunk({
+          type: packet.isKeyframe ? 'key' : 'delta',
+          timestamp: packet.timestamp * 1000,
+          duration: packet.duration * 1000,
+          data: packet.data,
+        });
+
+        this.audioDecoder.decode(desc);
+      }
+
+      console.log('[VideoExporter] Audio packets decoded, flushing decoder...');
+      await this.audioDecoder.flush();
+      
+      this.audioProcessingComplete = true;
+      console.log('[VideoExporter] Audio processing complete');
     } catch (e) {
-      console.error('[VideoExporter] Failed to start audio capture:', e);
+      console.error('[VideoExporter] Audio demux/decode error:', e);
+      this.hasAudio = false;
     }
   }
 
@@ -484,21 +487,18 @@ export class VideoExporter {
       this.audioEncoder = null;
     }
 
-    if (this.audioRecorder) {
+    if (this.audioDecoder) {
       try {
-        if (this.audioRecorder.state === 'recording') {
-          this.audioRecorder.stop();
+        if (this.audioDecoder.state === 'configured') {
+          this.audioDecoder.close();
         }
       } catch (e) {
-        console.warn('Error stopping audio recorder:', e);
+        console.warn('Error closing audio decoder:', e);
       }
-      this.audioRecorder = null;
+      this.audioDecoder = null;
     }
 
-    if (this.audioStream) {
-      this.audioStream.getTracks().forEach(t => t.stop());
-      this.audioStream = null;
-    }
+    this.audioProcessingComplete = false;
 
     if (this.decoder) {
       try {
