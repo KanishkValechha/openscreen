@@ -87,8 +87,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         return;
       }
 
-      const mediaStream = await (navigator.mediaDevices as any).getUserMedia({
-        audio: false,
+      // Get audio preferences
+      const audioPrefs = await window.electronAPI.getAudioPreferences();
+      console.log('[useScreenRecorder] Audio prefs:', audioPrefs);
+
+      // Build constraints for screen capture
+      const constraints: any = {
         video: {
           mandatory: {
             chromeMediaSource: "desktop",
@@ -99,7 +103,43 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
             minFrameRate: 30,
           },
         },
+      };
+
+      // Add system audio if enabled
+      if (audioPrefs.screenAudio) {
+        constraints.audio = {
+          mandatory: {
+            chromeMediaSource: "desktop",
+            chromeMediaSourceId: selectedSource.id,
+          },
+        };
+      }
+
+      // Get screen stream (video + optional system audio)
+      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(constraints);
+
+      // Add mic if enabled - use simple approach, just request any mic
+      if (audioPrefs.micEnabled) {
+        try {
+          // Request any available microphone
+          const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const micTracks = micStream.getAudioTracks();
+          console.log('[useScreenRecorder] Mic tracks found:', micTracks.length);
+          micTracks.forEach((track: MediaStreamTrack) => {
+            console.log('[useScreenRecorder] Adding mic track:', track.label);
+            mediaStream.addTrack(track);
+          });
+        } catch (micError) {
+          console.error('[useScreenRecorder] Failed to add microphone:', micError);
+        }
+      }
+
+      // Log final stream
+      console.log('[useScreenRecorder] Final stream tracks:');
+      mediaStream.getTracks().forEach((track: MediaStreamTrack, i: number) => {
+        console.log(`  Track ${i}: ${track.kind} - "${track.label}"`);
       });
+
       stream.current = mediaStream;
       if (!stream.current) {
         throw new Error("Media stream is not available.");
