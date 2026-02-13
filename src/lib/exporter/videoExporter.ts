@@ -196,11 +196,13 @@ export class VideoExporter {
 
         const canvas = this.renderer!.getCanvas();
 
-        // Create VideoFrame from canvas - canvas is valid CanvasImageSource
-        const exportFrame = new VideoFrame(canvas, {
+        // Create VideoFrame from canvas using ImageBitmap (most reliable)
+        const bitmap = await createImageBitmap(canvas);
+        const exportFrame = new VideoFrame(bitmap, {
           timestamp,
           duration: frameDuration,
         });
+        bitmap.close();
 
         // Wait for encoder queue to have space
         while (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
