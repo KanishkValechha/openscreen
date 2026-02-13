@@ -402,20 +402,42 @@ export class VideoExporter {
     if (!this.audioEncoder || !this.muxer) return;
 
     try {
-      console.log('[VideoExporter] Starting audio demuxing...');
+      console.log('[VideoExporter] Starting audio demuxing with mediabunny...');
 
       const response = await fetch(this.config.videoUrl);
       const arrayBuffer = await response.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'video/webm' });
 
-      console.log('[VideoExporter] Demuxing WebM...');
-      const { audioTrack, audioPackets } = await demuxWebM(arrayBuffer);
+      console.log('[VideoExporter] Loading WebM with mediabunny...');
+      const input = new Input({
+        formats: ALL_FORMATS,
+        source: new BlobSource(blob)
+      });
+
+      const audioTrack = await input.getPrimaryAudioTrack();
+      if (!audioTrack) {
+        console.warn('[VideoExporter] No audio track found in WebM');
+        this.hasAudio = false;
+        return;
+      }
+
+      const audioInfo = await audioTrack.getDecoderConfig();
+      if (!audioInfo) {
+        console.warn('[VideoExporter] No audio decoder config found');
+        this.hasAudio = false;
+        return;
+      }
+      console.log('[VideoExporter] Audio track info:', audioInfo);
+
+      const sink = new EncodedPacketSink(audioTrack);
       
-      console.log(`[VideoExporter] Found ${audioPackets.length} audio packets, sampleRate: ${audioTrack.sampleRate}, channels: ${audioTrack.channels}`);
+      const opusSupport = await AudioDecoder.isConfigSupported({
+        codec: 'opus',
+        sampleRate: audioInfo.sampleRate,
+        numberOfChannels: audioInfo.numberOfChannels,
+        description: audioInfo.description
+      });
 
-      const opusConfig = createOpusDecoderConfig(audioTrack);
-      console.log('[VideoExporter] Opus config:', opusConfig);
-
-      const opusSupport = await AudioDecoder.isConfigSupported(opusConfig);
       if (!opusSupport.supported) {
         console.warn('[VideoExporter] Opus decode not supported, disabling audio');
         this.hasAudio = false;
@@ -432,23 +454,30 @@ export class VideoExporter {
         error: (e) => console.error('[VideoExporter] Audio decoder error:', e),
       });
 
-      this.audioDecoder.configure(opusConfig);
+      await this.audioDecoder.configure({
+        codec: 'opus',
+        sampleRate: audioInfo.sampleRate,
+        numberOfChannels: audioInfo.numberOfChannels,
+        description: audioInfo.description
+      });
       console.log('[VideoExporter] Audio decoder configured');
 
-      for (const packet of audioPackets) {
+      let packetCount = 0;
+      for await (const packet of sink.packets()) {
         if (this.cancelled) break;
 
-        const desc = new EncodedAudioChunk({
-          type: packet.isKeyframe ? 'key' : 'delta',
-          timestamp: packet.timestamp * 1000,
-          duration: packet.duration * 1000,
-          data: packet.data,
+        const chunk = new EncodedAudioChunk({
+          type: 'delta',
+          timestamp: packet.timestamp * 1000000,
+          duration: packet.duration ? packet.duration * 1000000 : 0,
+          data: packet.data
         });
 
-        this.audioDecoder.decode(desc);
+        this.audioDecoder.decode(chunk);
+        packetCount++;
       }
 
-      console.log('[VideoExporter] Audio packets decoded, flushing decoder...');
+      console.log(`[VideoExporter] Decoded ${packetCount} audio packets, flushing...`);
       await this.audioDecoder.flush();
       
       this.audioProcessingComplete = true;
