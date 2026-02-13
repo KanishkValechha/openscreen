@@ -91,8 +91,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
       const audioPrefs = await window.electronAPI.getAudioPreferences();
       console.log('[useScreenRecorder] Audio prefs:', audioPrefs);
 
-      // Build constraints for screen capture
-      const constraints: any = {
+      // Get screen stream first (video + system audio)
+      const screenConstraints: any = {
         video: {
           mandatory: {
             chromeMediaSource: "desktop",
@@ -105,36 +105,36 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         },
       };
 
-      // Handle audio - request system audio AND mic TOGETHER if both enabled
-      if (audioPrefs.screenAudio && audioPrefs.micEnabled) {
-        // Request both system audio and mic in single call
-        constraints.audio = [
-          {
-            mandatory: {
-              chromeMediaSource: "desktop",
-              chromeMediaSourceId: selectedSource.id,
-            },
-          },
-          audioPrefs.micDeviceId ? { deviceId: { exact: audioPrefs.micDeviceId } } : true
-        ];
-      } else if (audioPrefs.screenAudio) {
-        // System audio only
-        constraints.audio = {
+      // Add system audio if enabled
+      if (audioPrefs.screenAudio) {
+        screenConstraints.audio = {
           mandatory: {
             chromeMediaSource: "desktop",
             chromeMediaSourceId: selectedSource.id,
           },
         };
-      } else if (audioPrefs.micEnabled) {
-        // Mic only
-        constraints.audio = audioPrefs.micDeviceId ? 
-          { deviceId: { exact: audioPrefs.micDeviceId } } : 
-          true;
       }
 
-      // Get screen stream with all audio tracks
-      console.log('[useScreenRecorder] Requesting stream with constraints:', JSON.stringify(constraints, (k, v) => typeof v === 'object' ? '...' : v, 2));
-      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(constraints);
+      console.log('[useScreenRecorder] Getting screen stream with audio:', audioPrefs.screenAudio);
+      let mediaStream = await (navigator.mediaDevices as any).getUserMedia(screenConstraints);
+
+      // Add mic separately if enabled - this is more reliable than trying to do both together
+      if (audioPrefs.micEnabled) {
+        try {
+          const micConstraints: MediaStreamConstraints = audioPrefs.micDeviceId ? 
+            { audio: { deviceId: { exact: audioPrefs.micDeviceId } } } : 
+            { audio: true };
+          
+          console.log('[useScreenRecorder] Getting mic stream');
+          const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+          micStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
+            console.log('[useScreenRecorder] Adding mic track:', track.label);
+            mediaStream.addTrack(track);
+          });
+        } catch (micError) {
+          console.error('[useScreenRecorder] Failed to add microphone:', micError);
+        }
+      }
 
       // Log final stream
       console.log('[useScreenRecorder] Final stream tracks:');
