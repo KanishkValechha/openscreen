@@ -217,4 +217,19 @@ export function registerIpcHandlers(
   ipcMain.handle('get-platform', () => {
     return process.platform;
   });
+
+  let audioPreferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string } = {
+    screenAudio: true,
+    micEnabled: true,
+    micDeviceId: ''
+  };
+
+  ipcMain.handle('save-audio-preferences', (_, preferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string }) => {
+    audioPreferences = preferences;
+    return { success: true };
+  });
+
+  ipcMain.handle('get-audio-preferences', () => {
+    return audioPreferences;
+  });
 }

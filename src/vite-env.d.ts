@@ -42,5 +42,8 @@ interface Window {
     setCurrentVideoPath: (path: string) => Promise<{ success: boolean }>
     getCurrentVideoPath: () => Promise<{ success: boolean; path?: string }>
     clearCurrentVideoPath: () => Promise<{ success: boolean }>
+    getPlatform: () => Promise<string>
+    saveAudioPreferences: (preferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string }) => Promise<{ success: boolean }>
+    getAudioPreferences: () => Promise<{ screenAudio: boolean; micEnabled: boolean; micDeviceId: string }>
   }
 }
