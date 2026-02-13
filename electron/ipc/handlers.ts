@@ -217,4 +217,36 @@ export function registerIpcHandlers(
   ipcMain.handle('get-platform', () => {
     return process.platform;
   });
+
+  ipcMain.handle('get-audio-devices', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 1, height: 1 }
+      });
+      return sources.map(source => ({
+        id: source.id,
+        name: source.name,
+        isSystemAudio: true
+      }));
+    } catch (error) {
+      console.error('Failed to get audio sources:', error);
+      return [];
+    }
+  });
+
+  let audioPreferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string } = {
+    screenAudio: false,
+    micEnabled: false,
+    micDeviceId: ''
+  };
+
+  ipcMain.handle('save-audio-preferences', (_, preferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string }) => {
+    audioPreferences = preferences;
+    return { success: true };
+  });
+
+  ipcMain.handle('get-audio-preferences', () => {
+    return audioPreferences;
+  });
 }
