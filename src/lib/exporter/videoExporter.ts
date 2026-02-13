@@ -118,9 +118,17 @@ export class VideoExporter {
         throw new Error('Video element not available');
       }
 
-      // If we have audio, capture it via MediaStream
+      // If we have audio, extract and process it
+      // Note: Full audio trim support requires demuxing source WebM, decoding Opus to PCM,
+      // applying trim mapping, and re-encoding to AAC. For now, we skip audio when trims exist.
       if (this.hasAudio) {
-        this.captureAudioFromVideo(videoElement);
+        const hasTrims = this.config.trimRegions && this.config.trimRegions.length > 0;
+        if (!hasTrims) {
+          await this.processAudioWithoutTrims();
+        } else {
+          console.warn('[VideoExporter] Audio export disabled when trim regions exist');
+          this.hasAudio = false;
+        }
       }
 
       // Calculate effective duration and frame count (excluding trim regions)
@@ -223,11 +231,6 @@ export class VideoExporter {
       // Finalize encoding
       if (this.encoder && this.encoder.state === 'configured') {
         await this.encoder.flush();
-      }
-
-      // Finalize audio encoding
-      if (this.hasAudio && this.audioMediaRecorder && this.audioMediaRecorder.state === 'recording') {
-        this.audioMediaRecorder.stop();
       }
 
       // Wait for all muxing operations to complete
@@ -346,61 +349,59 @@ export class VideoExporter {
   }
 
   private audioEncoder: AudioEncoder | null = null;
-  private audioStream: MediaStream | null = null;
-  private audioMediaRecorder: MediaRecorder | null = null;
-  private audioChunks: Blob[] = [];
 
-  private captureAudioFromVideo(videoElement: HTMLVideoElement): void {
-    if (!this.hasAudio) return;
+  private async processAudioWithoutTrims(): Promise<void> {
+    if (!this.hasAudio || !this.decoder) return;
 
-    // Capture audio from video element
-    try {
-      // Create a stream from the video element that includes audio
-      this.audioStream = (videoElement as any).captureStream ? 
-        (videoElement as any).captureStream() : null;
-      
-      if (!this.audioStream) {
-        console.warn('[VideoExporter] Video does not support captureStream');
-        this.hasAudio = false;
-        return;
-      }
+    const videoElement = this.decoder.getVideoElement();
+    if (!videoElement) return;
 
-      const audioTracks = this.audioStream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        console.warn('[VideoExporter] No audio tracks found in video');
-        this.hasAudio = false;
-        return;
-      }
-
-      // Create a new stream with just audio
-      const audioOnlyStream = new MediaStream(audioTracks);
-
-      // Set up audio encoder
-      this.setupAudioEncoder();
-
-      // Use MediaRecorder to capture audio
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 
-        'audio/webm;codecs=opus' : 'audio/webm';
-
-      this.audioMediaRecorder = new MediaRecorder(audioOnlyStream, {
-        mimeType,
-        audioBitsPerSecond: 128000,
-      });
-
-      this.audioMediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          this.audioChunks.push(e.data);
-        }
-      };
-
-      this.audioMediaRecorder.start(100);
-    } catch (error) {
-      console.error('[VideoExporter] Error capturing audio:', error);
+    const audioStream = (videoElement as any).captureStream ? 
+      (videoElement as any).captureStream() : null;
+    
+    if (!audioStream) {
+      console.warn('[VideoExporter] Video does not support captureStream');
       this.hasAudio = false;
+      return;
     }
+
+    const audioTracks = audioStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.warn('[VideoExporter] No audio tracks found');
+      this.hasAudio = false;
+      return;
+    }
+
+    const audioOnlyStream = new MediaStream(audioTracks);
+    await this.initializeAudioEncoder();
+    
+    if (!this.audioEncoder) return;
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 
+      'audio/webm;codecs=opus' : 'audio/webm';
+
+    const mediaRecorder = new MediaRecorder(audioOnlyStream, {
+      mimeType,
+      audioBitsPerSecond: 128000,
+    });
+
+    const chunks: Blob[] = [];
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    mediaRecorder.start(100);
+
+    // Let audio collect for the duration of the export
+    const totalDuration = this.getEffectiveDuration(videoElement.duration);
+    await new Promise(resolve => setTimeout(resolve, totalDuration * 1000 + 500));
+
+    mediaRecorder.stop();
   }
 
-  private async setupAudioEncoder(): Promise<void> {
+  private async initializeAudioEncoder(): Promise<void> {
+    if (!this.hasAudio) return;
+
     const SAMPLE_RATE = 48000;
     const CHANNELS = 2;
 
@@ -484,22 +485,6 @@ export class VideoExporter {
         console.warn('Error closing audio encoder:', e);
       }
       this.audioEncoder = null;
-    }
-
-    if (this.audioMediaRecorder) {
-      try {
-        if (this.audioMediaRecorder.state === 'recording') {
-          this.audioMediaRecorder.stop();
-        }
-      } catch (e) {
-        console.warn('Error stopping audio recorder:', e);
-      }
-      this.audioMediaRecorder = null;
-    }
-
-    if (this.audioStream) {
-      this.audioStream.getTracks().forEach(track => track.stop());
-      this.audioStream = null;
     }
 
     this.muxer = null;
