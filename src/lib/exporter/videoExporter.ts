@@ -176,33 +176,66 @@ export class VideoExporter {
           currentSeekTime = videoTime;
         }
 
-        // Wait for seek to complete
+        // Wait for seek to complete and video to be ready
         if (isSeeking) {
           await new Promise<void>(resolve => {
-            videoElement.addEventListener('seeked', () => {
+            const onSeeked = () => {
               isSeeking = false;
               resolve();
-            }, { once: true });
+            };
+            videoElement.addEventListener('seeked', onSeeked, { once: true });
           });
+          
+          // Additional wait for video to be ready
+          await new Promise(resolve => setTimeout(resolve, 10));
         }
 
-        // Create a VideoFrame from the video element
-        const videoFrame = new VideoFrame(videoElement, { timestamp });
+        try {
+          // Create a VideoFrame from the video element
+          const videoFrame = new VideoFrame(videoElement, { timestamp });
 
-        // Render the frame with all effects using source timestamp
-        const sourceTimestamp = sourceTimeMs * 1000;
-        await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
-        videoFrame.close();
+          // Render the frame with all effects using source timestamp
+          const sourceTimestamp = sourceTimeMs * 1000;
+          await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
+          videoFrame.close();
+        } catch (vfError) {
+          console.error('[VideoExporter] VideoFrame creation error:', vfError);
+          // Skip this frame if VideoFrame fails
+          frameIndex++;
+          continue;
+        }
 
         const canvas = this.renderer!.getCanvas();
 
-        // Create VideoFrame from canvas using ImageBitmap (most reliable)
-        const bitmap = await createImageBitmap(canvas);
-        const exportFrame = new VideoFrame(bitmap, {
+        // Create VideoFrame from raw pixel data (most reliable approach)
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Failed to get 2D context from canvas');
+        }
+        
+        const width = canvas.width;
+        const height = canvas.height;
+        const imageData = ctx.getImageData(0, 0, width, height);
+        
+        // Create VideoFrame from RGBA data
+        const data = new Uint8Array(imageData.data.buffer);
+        const init: VideoFrameBufferInit = {
+          format: 'RGBA',
           timestamp,
           duration: frameDuration,
-        });
-        bitmap.close();
+          codedWidth: width,
+          codedHeight: height,
+          layout: [{ offset: 0, stride: width * 4 }]
+        };
+        
+        let exportFrame: VideoFrame;
+        try {
+          exportFrame = new VideoFrame(data, init);
+        } catch (frameError) {
+          console.error('[VideoExporter] Export frame error:', frameError);
+          frameIndex++;
+          continue;
+        }
 
         // Wait for encoder queue to have space
         while (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
