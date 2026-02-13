@@ -105,41 +105,36 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
         },
       };
 
-      // Add system audio if enabled
-      if (audioPrefs.screenAudio) {
+      // Handle audio - request system audio AND mic TOGETHER if both enabled
+      if (audioPrefs.screenAudio && audioPrefs.micEnabled) {
+        // Request both system audio and mic in single call
+        constraints.audio = [
+          {
+            mandatory: {
+              chromeMediaSource: "desktop",
+              chromeMediaSourceId: selectedSource.id,
+            },
+          },
+          audioPrefs.micDeviceId ? { deviceId: { exact: audioPrefs.micDeviceId } } : true
+        ];
+      } else if (audioPrefs.screenAudio) {
+        // System audio only
         constraints.audio = {
           mandatory: {
             chromeMediaSource: "desktop",
             chromeMediaSourceId: selectedSource.id,
           },
         };
+      } else if (audioPrefs.micEnabled) {
+        // Mic only
+        constraints.audio = audioPrefs.micDeviceId ? 
+          { deviceId: { exact: audioPrefs.micDeviceId } } : 
+          true;
       }
 
-      // Get screen stream (video + optional system audio)
+      // Get screen stream with all audio tracks
+      console.log('[useScreenRecorder] Requesting stream with constraints:', JSON.stringify(constraints, (k, v) => typeof v === 'object' ? '...' : v, 2));
       let mediaStream = await (navigator.mediaDevices as any).getUserMedia(constraints);
-
-      // Add mic if enabled - use specific device ID if provided
-      if (audioPrefs.micEnabled) {
-        try {
-          const micConstraints: any = { audio: true };
-          // Use specific mic device if selected
-          if (audioPrefs.micDeviceId) {
-            micConstraints.audio = {
-              deviceId: { exact: audioPrefs.micDeviceId }
-            };
-          }
-          console.log('[useScreenRecorder] Requesting mic with constraints:', micConstraints);
-          const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
-          const micTracks = micStream.getAudioTracks();
-          console.log('[useScreenRecorder] Mic tracks found:', micTracks.length);
-          micTracks.forEach((track: MediaStreamTrack) => {
-            console.log('[useScreenRecorder] Adding mic track:', track.label);
-            mediaStream.addTrack(track);
-          });
-        } catch (micError) {
-          console.error('[useScreenRecorder] Failed to add microphone:', micError);
-        }
-      }
 
       // Log final stream
       console.log('[useScreenRecorder] Final stream tracks:');

@@ -192,7 +192,7 @@ export function LaunchWindow() {
   return (
     <div className="w-full h-full flex items-center bg-transparent">
       <div
-        className={`w-full max-w-[550px] mx-auto flex items-center justify-between px-4 py-2 ${styles.electronDrag}`}
+        className={`w-full max-w-[600px] mx-auto flex items-center justify-between px-3 py-2 ${styles.electronDrag}`}
         style={{
           borderRadius: 16,
           background: 'linear-gradient(135deg, rgba(30,30,40,0.92) 0%, rgba(20,20,30,0.85) 100%)',
@@ -265,20 +265,30 @@ export function LaunchWindow() {
           </div>
         )}
 
-        {micEnabled && micDevices.length > 1 && (
-          <select
-            value={selectedMicId}
-            onChange={(e) => setSelectedMicId(e.target.value)}
-            disabled={recording}
-            className="text-xs bg-zinc-800 text-zinc-200 border border-zinc-700 rounded px-1 py-0.5 max-w-[100px]"
-          >
-            {micDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Mic ${device.deviceId.slice(0, 6)}`}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* Mic dropdown - cleaner UI with arrow */}
+        <div className="relative">
+          {micEnabled && micDevices.length > 0 && (
+            <div className="flex items-center">
+              <select
+                value={selectedMicId}
+                onChange={(e) => setSelectedMicId(e.target.value)}
+                disabled={recording}
+                className="appearance-none bg-zinc-800/80 text-xs text-zinc-200 border border-zinc-700 rounded-l px-2 py-1 pr-6 max-w-[120px] cursor-pointer hover:bg-zinc-700 focus:outline-none focus:border-green-500"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 6px center',
+                }}
+              >
+                {micDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Mic ${device.deviceId.slice(0, 8)}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
 
         <div className="w-px h-6 bg-white/30" />
 
