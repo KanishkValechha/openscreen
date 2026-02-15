@@ -20,13 +20,15 @@ export class VideoFileDecoder {
       this.videoElement!.addEventListener('loadedmetadata', async () => {
         const video = this.videoElement!;
         
-        // Check if the video has audio tracks
+        // Check if video has audio
         let hasAudio = false;
         try {
-          const audioTracks = (video as any).audioTracks;
-          hasAudio = audioTracks && audioTracks.length > 0;
-        } catch {
-          // Some browsers don't support audioTracks
+          // Try multiple methods to detect audio
+          hasAudio = (video as any).mozHasAudio || 
+                     (video as any).webkitAudioDecodedByteCount > 0 ||
+                     (video as any).audioTracks?.length > 0;
+        } catch (e) {
+          // If detection fails, assume no audio
           hasAudio = false;
         }
 

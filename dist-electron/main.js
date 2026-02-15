@@ -1,422 +1,294 @@
-import { ipcMain, screen, BrowserWindow, desktopCapturer, shell, app, dialog, nativeImage, Tray, Menu } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import fs from "node:fs/promises";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-const APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL$1 = process.env["VITE_DEV_SERVER_URL"];
-const RENDERER_DIST$1 = path.join(APP_ROOT, "dist");
-let hudOverlayWindow = null;
-ipcMain.on("hud-overlay-hide", () => {
-  if (hudOverlayWindow && !hudOverlayWindow.isDestroyed()) {
-    hudOverlayWindow.minimize();
-  }
+import { ipcMain as n, screen as j, BrowserWindow as _, desktopCapturer as C, shell as U, app as u, dialog as D, nativeImage as M, Tray as A, Menu as z } from "electron";
+import { fileURLToPath as O } from "node:url";
+import o from "node:path";
+import R from "node:fs/promises";
+const I = o.dirname(O(import.meta.url)), H = o.join(I, ".."), g = process.env.VITE_DEV_SERVER_URL, b = o.join(H, "dist");
+let w = null;
+n.on("hud-overlay-hide", () => {
+  w && !w.isDestroyed() && w.minimize();
 });
-function createHudOverlayWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { workArea } = primaryDisplay;
-  const windowWidth = 500;
-  const windowHeight = 100;
-  const x = Math.floor(workArea.x + (workArea.width - windowWidth) / 2);
-  const y = Math.floor(workArea.y + workArea.height - windowHeight - 5);
-  const win = new BrowserWindow({
-    width: windowWidth,
-    height: windowHeight,
+function q() {
+  const a = j.getPrimaryDisplay(), { workArea: t } = a, d = 500, p = 100, v = Math.floor(t.x + (t.width - d) / 2), h = Math.floor(t.y + t.height - p - 5), c = new _({
+    width: d,
+    height: p,
     minWidth: 500,
     maxWidth: 500,
     minHeight: 100,
     maxHeight: 100,
-    x,
-    y,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    hasShadow: false,
+    x: v,
+    y: h,
+    frame: !1,
+    transparent: !0,
+    resizable: !1,
+    alwaysOnTop: !0,
+    skipTaskbar: !0,
+    hasShadow: !1,
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs"),
-      nodeIntegration: false,
-      contextIsolation: true,
-      backgroundThrottling: false
+      preload: o.join(I, "preload.mjs"),
+      nodeIntegration: !1,
+      contextIsolation: !0,
+      backgroundThrottling: !1
     }
   });
-  win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  hudOverlayWindow = win;
-  win.on("closed", () => {
-    if (hudOverlayWindow === win) {
-      hudOverlayWindow = null;
-    }
-  });
-  if (VITE_DEV_SERVER_URL$1) {
-    win.loadURL(VITE_DEV_SERVER_URL$1 + "?windowType=hud-overlay");
-  } else {
-    win.loadFile(path.join(RENDERER_DIST$1, "index.html"), {
-      query: { windowType: "hud-overlay" }
-    });
-  }
-  return win;
+  return c.webContents.on("did-finish-load", () => {
+    c == null || c.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), w = c, c.on("closed", () => {
+    w === c && (w = null);
+  }), g ? c.loadURL(g + "?windowType=hud-overlay") : c.loadFile(o.join(b, "index.html"), {
+    query: { windowType: "hud-overlay" }
+  }), c;
 }
-function createEditorWindow() {
-  const isMac = process.platform === "darwin";
-  const win = new BrowserWindow({
+function B() {
+  const a = process.platform === "darwin", t = new _({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    ...isMac && {
+    ...a && {
       titleBarStyle: "hiddenInset",
       trafficLightPosition: { x: 12, y: 12 }
     },
-    transparent: false,
-    resizable: true,
-    alwaysOnTop: false,
-    skipTaskbar: false,
+    transparent: !1,
+    resizable: !0,
+    alwaysOnTop: !1,
+    skipTaskbar: !1,
     title: "OpenScreen",
     backgroundColor: "#000000",
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs"),
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: false,
-      backgroundThrottling: false
+      preload: o.join(I, "preload.mjs"),
+      nodeIntegration: !1,
+      contextIsolation: !0,
+      webSecurity: !1,
+      backgroundThrottling: !1
     }
   });
-  win.maximize();
-  win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  if (VITE_DEV_SERVER_URL$1) {
-    win.loadURL(VITE_DEV_SERVER_URL$1 + "?windowType=editor");
-  } else {
-    win.loadFile(path.join(RENDERER_DIST$1, "index.html"), {
-      query: { windowType: "editor" }
-    });
-  }
-  return win;
+  return t.maximize(), t.webContents.on("did-finish-load", () => {
+    t == null || t.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), g ? t.loadURL(g + "?windowType=editor") : t.loadFile(o.join(b, "index.html"), {
+    query: { windowType: "editor" }
+  }), t;
 }
-function createSourceSelectorWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-  const win = new BrowserWindow({
+function N() {
+  const { width: a, height: t } = j.getPrimaryDisplay().workAreaSize, d = new _({
     width: 620,
     height: 420,
     minHeight: 350,
     maxHeight: 500,
-    x: Math.round((width - 620) / 2),
-    y: Math.round((height - 420) / 2),
-    frame: false,
-    resizable: false,
-    alwaysOnTop: true,
-    transparent: true,
+    x: Math.round((a - 620) / 2),
+    y: Math.round((t - 420) / 2),
+    frame: !1,
+    resizable: !1,
+    alwaysOnTop: !0,
+    transparent: !0,
     backgroundColor: "#00000000",
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs"),
-      nodeIntegration: false,
-      contextIsolation: true
+      preload: o.join(I, "preload.mjs"),
+      nodeIntegration: !1,
+      contextIsolation: !0
     }
   });
-  if (VITE_DEV_SERVER_URL$1) {
-    win.loadURL(VITE_DEV_SERVER_URL$1 + "?windowType=source-selector");
-  } else {
-    win.loadFile(path.join(RENDERER_DIST$1, "index.html"), {
-      query: { windowType: "source-selector" }
-    });
-  }
-  return win;
+  return g ? d.loadURL(g + "?windowType=source-selector") : d.loadFile(o.join(b, "index.html"), {
+    query: { windowType: "source-selector" }
+  }), d;
 }
-let selectedSource = null;
-function registerIpcHandlers(createEditorWindow2, createSourceSelectorWindow2, getMainWindow, getSourceSelectorWindow, onRecordingStateChange) {
-  ipcMain.handle("get-sources", async (_, opts) => {
-    const sources = await desktopCapturer.getSources(opts);
-    return sources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      display_id: source.display_id,
-      thumbnail: source.thumbnail ? source.thumbnail.toDataURL() : null,
-      appIcon: source.appIcon ? source.appIcon.toDataURL() : null
-    }));
-  });
-  ipcMain.handle("select-source", (_, source) => {
-    selectedSource = source;
-    const sourceSelectorWin = getSourceSelectorWindow();
-    if (sourceSelectorWin) {
-      sourceSelectorWin.close();
-    }
-    return selectedSource;
-  });
-  ipcMain.handle("get-selected-source", () => {
-    return selectedSource;
-  });
-  ipcMain.handle("open-source-selector", () => {
-    const sourceSelectorWin = getSourceSelectorWindow();
-    if (sourceSelectorWin) {
-      sourceSelectorWin.focus();
+let T = null;
+function G(a, t, d, p, v) {
+  n.handle("get-sources", async (e, s) => (await C.getSources(s)).map((r) => ({
+    id: r.id,
+    name: r.name,
+    display_id: r.display_id,
+    thumbnail: r.thumbnail ? r.thumbnail.toDataURL() : null,
+    appIcon: r.appIcon ? r.appIcon.toDataURL() : null
+  }))), n.handle("select-source", (e, s) => {
+    T = s;
+    const l = p();
+    return l && l.close(), T;
+  }), n.handle("get-selected-source", () => T), n.handle("open-source-selector", () => {
+    const e = p();
+    if (e) {
+      e.focus();
       return;
     }
-    createSourceSelectorWindow2();
-  });
-  ipcMain.handle("switch-to-editor", () => {
-    const mainWin = getMainWindow();
-    if (mainWin) {
-      mainWin.close();
-    }
-    createEditorWindow2();
-  });
-  ipcMain.handle("store-recorded-video", async (_, videoData, fileName) => {
+    t();
+  }), n.handle("switch-to-editor", () => {
+    const e = d();
+    e && e.close(), a();
+  }), n.handle("store-recorded-video", async (e, s, l) => {
     try {
-      const videoPath = path.join(RECORDINGS_DIR, fileName);
-      await fs.writeFile(videoPath, Buffer.from(videoData));
-      currentVideoPath = videoPath;
-      return {
-        success: true,
-        path: videoPath,
+      const r = o.join(f, l);
+      return await R.writeFile(r, Buffer.from(s)), h = r, {
+        success: !0,
+        path: r,
         message: "Video stored successfully"
       };
-    } catch (error) {
-      console.error("Failed to store video:", error);
-      return {
-        success: false,
+    } catch (r) {
+      return console.error("Failed to store video:", r), {
+        success: !1,
         message: "Failed to store video",
-        error: String(error)
+        error: String(r)
       };
     }
-  });
-  ipcMain.handle("get-recorded-video-path", async () => {
+  }), n.handle("get-recorded-video-path", async () => {
     try {
-      const files = await fs.readdir(RECORDINGS_DIR);
-      const videoFiles = files.filter((file) => file.endsWith(".webm"));
-      if (videoFiles.length === 0) {
-        return { success: false, message: "No recorded video found" };
-      }
-      const latestVideo = videoFiles.sort().reverse()[0];
-      const videoPath = path.join(RECORDINGS_DIR, latestVideo);
-      return { success: true, path: videoPath };
-    } catch (error) {
-      console.error("Failed to get video path:", error);
-      return { success: false, message: "Failed to get video path", error: String(error) };
+      const s = (await R.readdir(f)).filter((S) => S.endsWith(".webm"));
+      if (s.length === 0)
+        return { success: !1, message: "No recorded video found" };
+      const l = s.sort().reverse()[0];
+      return { success: !0, path: o.join(f, l) };
+    } catch (e) {
+      return console.error("Failed to get video path:", e), { success: !1, message: "Failed to get video path", error: String(e) };
     }
-  });
-  ipcMain.handle("set-recording-state", (_, recording) => {
-    const source = selectedSource || { name: "Screen" };
-    if (onRecordingStateChange) {
-      onRecordingStateChange(recording, source.name);
-    }
-  });
-  ipcMain.handle("open-external-url", async (_, url) => {
+  }), n.handle("set-recording-state", (e, s) => {
+    v && v(s, (T || { name: "Screen" }).name);
+  }), n.handle("open-external-url", async (e, s) => {
     try {
-      await shell.openExternal(url);
-      return { success: true };
-    } catch (error) {
-      console.error("Failed to open URL:", error);
-      return { success: false, error: String(error) };
+      return await U.openExternal(s), { success: !0 };
+    } catch (l) {
+      return console.error("Failed to open URL:", l), { success: !1, error: String(l) };
     }
-  });
-  ipcMain.handle("get-asset-base-path", () => {
+  }), n.handle("get-asset-base-path", () => {
     try {
-      if (app.isPackaged) {
-        return path.join(process.resourcesPath, "assets");
-      }
-      return path.join(app.getAppPath(), "public", "assets");
-    } catch (err) {
-      console.error("Failed to resolve asset base path:", err);
-      return null;
+      return u.isPackaged ? o.join(process.resourcesPath, "assets") : o.join(u.getAppPath(), "public", "assets");
+    } catch (e) {
+      return console.error("Failed to resolve asset base path:", e), null;
     }
-  });
-  ipcMain.handle("save-exported-video", async (_, videoData, fileName) => {
+  }), n.handle("save-exported-video", async (e, s, l) => {
     try {
-      const isGif = fileName.toLowerCase().endsWith(".gif");
-      const filters = isGif ? [{ name: "GIF Image", extensions: ["gif"] }] : [{ name: "MP4 Video", extensions: ["mp4"] }];
-      const result = await dialog.showSaveDialog({
-        title: isGif ? "Save Exported GIF" : "Save Exported Video",
-        defaultPath: path.join(app.getPath("downloads"), fileName),
-        filters,
+      const r = l.toLowerCase().endsWith(".gif"), S = r ? [{ name: "GIF Image", extensions: ["gif"] }] : [{ name: "MP4 Video", extensions: ["mp4"] }], P = await D.showSaveDialog({
+        title: r ? "Save Exported GIF" : "Save Exported Video",
+        defaultPath: o.join(u.getPath("downloads"), l),
+        filters: S,
         properties: ["createDirectory", "showOverwriteConfirmation"]
       });
-      if (result.canceled || !result.filePath) {
-        return {
-          success: false,
-          cancelled: true,
-          message: "Export cancelled"
-        };
-      }
-      await fs.writeFile(result.filePath, Buffer.from(videoData));
-      return {
-        success: true,
-        path: result.filePath,
+      return P.canceled || !P.filePath ? {
+        success: !1,
+        cancelled: !0,
+        message: "Export cancelled"
+      } : (await R.writeFile(P.filePath, Buffer.from(s)), {
+        success: !0,
+        path: P.filePath,
         message: "Video exported successfully"
-      };
-    } catch (error) {
-      console.error("Failed to save exported video:", error);
-      return {
-        success: false,
+      });
+    } catch (r) {
+      return console.error("Failed to save exported video:", r), {
+        success: !1,
         message: "Failed to save exported video",
-        error: String(error)
+        error: String(r)
       };
     }
-  });
-  ipcMain.handle("open-video-file-picker", async () => {
+  }), n.handle("open-video-file-picker", async () => {
     try {
-      const result = await dialog.showOpenDialog({
+      const e = await D.showOpenDialog({
         title: "Select Video File",
-        defaultPath: RECORDINGS_DIR,
+        defaultPath: f,
         filters: [
           { name: "Video Files", extensions: ["webm", "mp4", "mov", "avi", "mkv"] },
           { name: "All Files", extensions: ["*"] }
         ],
         properties: ["openFile"]
       });
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, cancelled: true };
-      }
-      return {
-        success: true,
-        path: result.filePaths[0]
+      return e.canceled || e.filePaths.length === 0 ? { success: !1, cancelled: !0 } : {
+        success: !0,
+        path: e.filePaths[0]
       };
-    } catch (error) {
-      console.error("Failed to open file picker:", error);
-      return {
-        success: false,
+    } catch (e) {
+      return console.error("Failed to open file picker:", e), {
+        success: !1,
         message: "Failed to open file picker",
-        error: String(error)
+        error: String(e)
       };
     }
   });
-  let currentVideoPath = null;
-  ipcMain.handle("set-current-video-path", (_, path2) => {
-    currentVideoPath = path2;
-    return { success: true };
-  });
-  ipcMain.handle("get-current-video-path", () => {
-    return currentVideoPath ? { success: true, path: currentVideoPath } : { success: false };
-  });
-  ipcMain.handle("clear-current-video-path", () => {
-    currentVideoPath = null;
-    return { success: true };
-  });
-  ipcMain.handle("get-platform", () => {
-    return process.platform;
-  });
+  let h = null;
+  n.handle("set-current-video-path", (e, s) => (h = s, { success: !0 })), n.handle("get-current-video-path", () => h ? { success: !0, path: h } : { success: !1 }), n.handle("clear-current-video-path", () => (h = null, { success: !0 })), n.handle("get-platform", () => process.platform);
+  let c = {
+    screenAudio: !0,
+    micEnabled: !0,
+    micDeviceId: ""
+  };
+  n.handle("save-audio-preferences", (e, s) => (c = s, { success: !0 })), n.handle("get-audio-preferences", () => c);
 }
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RECORDINGS_DIR = path.join(app.getPath("userData"), "recordings");
-async function ensureRecordingsDir() {
+const $ = o.dirname(O(import.meta.url)), f = o.join(u.getPath("userData"), "recordings");
+async function Q() {
   try {
-    await fs.mkdir(RECORDINGS_DIR, { recursive: true });
-    console.log("RECORDINGS_DIR:", RECORDINGS_DIR);
-    console.log("User Data Path:", app.getPath("userData"));
-  } catch (error) {
-    console.error("Failed to create recordings directory:", error);
+    await R.mkdir(f, { recursive: !0 }), console.log("RECORDINGS_DIR:", f), console.log("User Data Path:", u.getPath("userData"));
+  } catch (a) {
+    console.error("Failed to create recordings directory:", a);
   }
 }
-process.env.APP_ROOT = path.join(__dirname, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-let mainWindow = null;
-let sourceSelectorWindow = null;
-let tray = null;
-let selectedSourceName = "";
-const defaultTrayIcon = getTrayIcon("openscreen.png");
-const recordingTrayIcon = getTrayIcon("rec-button.png");
-function createWindow() {
-  mainWindow = createHudOverlayWindow();
+process.env.APP_ROOT = o.join($, "..");
+const J = process.env.VITE_DEV_SERVER_URL, oe = o.join(process.env.APP_ROOT, "dist-electron"), V = o.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = J ? o.join(process.env.APP_ROOT, "public") : V;
+let i = null, y = null, m = null, W = "";
+const k = L("openscreen.png"), K = L("rec-button.png");
+function E() {
+  i = q();
 }
-function createTray() {
-  tray = new Tray(defaultTrayIcon);
+function x() {
+  m = new A(k);
 }
-function getTrayIcon(filename) {
-  return nativeImage.createFromPath(path.join(process.env.VITE_PUBLIC || RENDERER_DIST, filename)).resize({
+function L(a) {
+  return M.createFromPath(o.join(process.env.VITE_PUBLIC || V, a)).resize({
     width: 24,
     height: 24,
     quality: "best"
   });
 }
-function updateTrayMenu(recording = false) {
-  if (!tray) return;
-  const trayIcon = recording ? recordingTrayIcon : defaultTrayIcon;
-  const trayToolTip = recording ? `Recording: ${selectedSourceName}` : "OpenScreen";
-  const menuTemplate = recording ? [
+function F(a = !1) {
+  if (!m) return;
+  const t = a ? K : k, d = a ? `Recording: ${W}` : "OpenScreen", p = a ? [
     {
       label: "Stop Recording",
       click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("stop-recording-from-tray");
-        }
+        i && !i.isDestroyed() && i.webContents.send("stop-recording-from-tray");
       }
     }
   ] : [
     {
       label: "Open",
       click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.isMinimized() && mainWindow.restore();
-        } else {
-          createWindow();
-        }
+        i && !i.isDestroyed() ? i.isMinimized() && i.restore() : E();
       }
     },
     {
       label: "Quit",
       click: () => {
-        app.quit();
+        u.quit();
       }
     }
   ];
-  tray.setImage(trayIcon);
-  tray.setToolTip(trayToolTip);
-  tray.setContextMenu(Menu.buildFromTemplate(menuTemplate));
+  m.setImage(t), m.setToolTip(d), m.setContextMenu(z.buildFromTemplate(p));
 }
-function createEditorWindowWrapper() {
-  if (mainWindow) {
-    mainWindow.close();
-    mainWindow = null;
-  }
-  mainWindow = createEditorWindow();
+function X() {
+  i && (i.close(), i = null), i = B();
 }
-function createSourceSelectorWindowWrapper() {
-  sourceSelectorWindow = createSourceSelectorWindow();
-  sourceSelectorWindow.on("closed", () => {
-    sourceSelectorWindow = null;
-  });
-  return sourceSelectorWindow;
+function Y() {
+  return y = N(), y.on("closed", () => {
+    y = null;
+  }), y;
 }
-app.on("window-all-closed", () => {
+u.on("window-all-closed", () => {
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+u.on("activate", () => {
+  _.getAllWindows().length === 0 && E();
 });
-app.whenReady().then(async () => {
-  const { ipcMain: ipcMain2 } = await import("electron");
-  ipcMain2.on("hud-overlay-close", () => {
-    app.quit();
-  });
-  createTray();
-  updateTrayMenu();
-  await ensureRecordingsDir();
-  registerIpcHandlers(
-    createEditorWindowWrapper,
-    createSourceSelectorWindowWrapper,
-    () => mainWindow,
-    () => sourceSelectorWindow,
-    (recording, sourceName) => {
-      selectedSourceName = sourceName;
-      if (!tray) createTray();
-      updateTrayMenu(recording);
-      if (!recording) {
-        if (mainWindow) mainWindow.restore();
-      }
+u.whenReady().then(async () => {
+  const { ipcMain: a } = await import("electron");
+  a.on("hud-overlay-close", () => {
+    u.quit();
+  }), x(), F(), await Q(), G(
+    X,
+    Y,
+    () => i,
+    () => y,
+    (t, d) => {
+      W = d, m || x(), F(t), t || i && i.restore();
     }
-  );
-  createWindow();
+  ), E();
 });
 export {
-  MAIN_DIST,
-  RECORDINGS_DIR,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  oe as MAIN_DIST,
+  f as RECORDINGS_DIR,
+  V as RENDERER_DIST,
+  J as VITE_DEV_SERVER_URL
 };

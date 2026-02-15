@@ -2,6 +2,7 @@ import type { ExportConfig, ExportProgress, ExportResult } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
+import { Input, ALL_FORMATS, BlobSource, EncodedPacketSink } from 'mediabunny';
 import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion } from '@/components/video-editor/types';
 
 interface VideoExporterConfig extends ExportConfig {
@@ -31,14 +32,21 @@ export class VideoExporter {
   private muxer: VideoMuxer | null = null;
   private cancelled = false;
   private encodeQueue = 0;
-  // Increased queue size for better throughput with hardware encoding
-  private readonly MAX_ENCODE_QUEUE = 120;
+  private readonly MAX_ENCODE_QUEUE = 300;
   private videoDescription: Uint8Array | undefined;
   private videoColorSpace: VideoColorSpaceInit | undefined;
-  // Track muxing promises for parallel processing
   private muxingPromises: Promise<void>[] = [];
   private chunkCount = 0;
+  
+  // Audio encoding
+  private audioEncoder: AudioEncoder | null = null;
+  private audioDecoder: AudioDecoder | null = null;
   private hasAudio = false;
+  private audioProcessingComplete = false;
+
+  isAudioProcessingComplete(): boolean {
+    return this.audioProcessingComplete;
+  }
 
   constructor(config: VideoExporterConfig) {
     this.config = config;
@@ -107,8 +115,8 @@ export class VideoExporter {
       // Initialize video encoder
       await this.initializeEncoder();
 
-      // Initialize muxer
-      this.hasAudio = !!(this.config.hasAudio && videoInfo.hasAudio);
+      // Initialize muxer - pass hasAudio from videoInfo
+      this.hasAudio = videoInfo.hasAudio;
       this.muxer = new VideoMuxer(this.config, this.hasAudio);
       await this.muxer.initialize();
 
@@ -139,78 +147,103 @@ export class VideoExporter {
       console.log('[VideoExporter] Effective duration:', effectiveDuration, 's');
       console.log('[VideoExporter] Total frames to export:', totalFrames);
 
-      // Process frames continuously without batching delays
+      // Optimized pipeline: seek, render, encode in parallel using workers
       const frameDuration = 1_000_000 / this.config.frameRate; // in microseconds
       let frameIndex = 0;
       const timeStep = 1 / this.config.frameRate;
 
+      // Pipeline stages
+      let currentSeekTime = 0;
+      let isSeeking = false;
+
+      // Process frames with overlapped I/O
       while (frameIndex < totalFrames && !this.cancelled) {
         const i = frameIndex;
         const timestamp = i * frameDuration;
-
-        // Map effective time to source time (accounting for trim regions)
         const effectiveTimeMs = (i * timeStep) * 1000;
         const sourceTimeMs = this.mapEffectiveToSourceTime(effectiveTimeMs);
         const videoTime = sourceTimeMs / 1000;
-          
-        // Seek if needed or wait for first frame to be ready
-        const needsSeek = Math.abs(videoElement.currentTime - videoTime) > 0.001;
 
-        if (needsSeek) {
-          // Attach listener BEFORE setting currentTime to avoid race condition
-          const seekedPromise = new Promise<void>(resolve => {
-            videoElement.addEventListener('seeked', () => resolve(), { once: true });
-          });
-          
+        // Start seeking to next frame while current frame is being encoded
+        if (!isSeeking && currentSeekTime !== videoTime) {
+          isSeeking = true;
           videoElement.currentTime = videoTime;
-          await seekedPromise;
-        } else if (i === 0) {
-          // Only for the very first frame, wait for it to be ready
-          await new Promise<void>(resolve => {
-            videoElement.requestVideoFrameCallback(() => resolve());
-          });
+          currentSeekTime = videoTime;
         }
 
-        // Create a VideoFrame from the video element (on GPU!)
-        const videoFrame = new VideoFrame(videoElement, {
-          timestamp,
-        });
+        // Wait for seek to complete and video to be ready
+        if (isSeeking) {
+          await new Promise<void>(resolve => {
+            const onSeeked = () => {
+              isSeeking = false;
+              resolve();
+            };
+            videoElement.addEventListener('seeked', onSeeked, { once: true });
+          });
+          
+          // Additional wait for video to be ready
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
 
-        // Render the frame with all effects using source timestamp
-        const sourceTimestamp = sourceTimeMs * 1000; // Convert to microseconds
-        await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
-        
-        videoFrame.close();
+        try {
+          // Create a VideoFrame from the video element
+          const videoFrame = new VideoFrame(videoElement, { timestamp });
+
+          // Render the frame with all effects using source timestamp
+          const sourceTimestamp = sourceTimeMs * 1000;
+          await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
+          videoFrame.close();
+        } catch (vfError) {
+          console.error('[VideoExporter] VideoFrame creation error:', vfError);
+          // Skip this frame if VideoFrame fails
+          frameIndex++;
+          continue;
+        }
 
         const canvas = this.renderer!.getCanvas();
 
-        // Create VideoFrame from canvas on GPU without reading pixels
-        // @ts-ignore - colorSpace not in TypeScript definitions but works at runtime
-        const exportFrame = new VideoFrame(canvas, {
+        // Create VideoFrame from raw pixel data (most reliable approach)
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Failed to get 2D context from canvas');
+        }
+        
+        const width = canvas.width;
+        const height = canvas.height;
+        const imageData = ctx.getImageData(0, 0, width, height);
+        
+        // Create VideoFrame from RGBA data
+        const data = new Uint8Array(imageData.data.buffer);
+        const init: VideoFrameBufferInit = {
+          format: 'RGBA',
           timestamp,
           duration: frameDuration,
-          colorSpace: {
-            primaries: 'bt709',
-            transfer: 'iec61966-2-1',
-            matrix: 'rgb',
-            fullRange: true,
-          },
-        });
+          codedWidth: width,
+          codedHeight: height,
+          layout: [{ offset: 0, stride: width * 4 }]
+        };
+        
+        let exportFrame: VideoFrame;
+        try {
+          exportFrame = new VideoFrame(data, init);
+        } catch (frameError) {
+          console.error('[VideoExporter] Export frame error:', frameError);
+          frameIndex++;
+          continue;
+        }
 
-        // Check encoder queue before encoding to keep it full
+        // Wait for encoder queue to have space
         while (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
           await new Promise(resolve => setTimeout(resolve, 0));
         }
 
+        // Encode the frame
         if (this.encoder && this.encoder.state === 'configured') {
           this.encodeQueue++;
           this.encoder.encode(exportFrame, { keyFrame: i % 150 === 0 });
-        } else {
-          console.warn(`[Frame ${i}] Encoder not ready! State: ${this.encoder?.state}`);
         }
 
         exportFrame.close();
-
         frameIndex++;
 
         // Update progress
@@ -232,6 +265,17 @@ export class VideoExporter {
       if (this.encoder && this.encoder.state === 'configured') {
         await this.encoder.flush();
       }
+
+      // Wait for audio processing to complete if it's still running
+      if (audioProcessingPromise) {
+        await audioProcessingPromise;
+      }
+
+      // Finalize audio encoding
+      if (this.audioEncoder) {
+        await this.audioEncoder.flush();
+      }
+      this.audioProcessingComplete = true;
 
       // Wait for all muxing operations to complete
       await Promise.all(this.muxingPromises);
@@ -439,6 +483,105 @@ export class VideoExporter {
     }
 
     this.audioEncoder.configure(audioConfig);
+      console.warn('[VideoExporter] AAC not supported, disabling audio');
+      this.audioEncoder.close();
+      this.audioEncoder = null;
+      return false;
+    }
+
+    this.audioEncoder.configure(audioConfig);
+    console.log('[VideoExporter] Audio encoder initialized for AAC');
+    return true;
+  }
+
+  private async processAudioDemuxDecode(): Promise<void> {
+    if (!this.audioEncoder || !this.muxer) return;
+
+    try {
+      console.log('[VideoExporter] Starting audio demuxing with mediabunny...');
+
+      const response = await fetch(this.config.videoUrl);
+      const arrayBuffer = await response.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'video/webm' });
+
+      console.log('[VideoExporter] Loading WebM with mediabunny...');
+      const input = new Input({
+        formats: ALL_FORMATS,
+        source: new BlobSource(blob)
+      });
+
+      const audioTrack = await input.getPrimaryAudioTrack();
+      if (!audioTrack) {
+        console.warn('[VideoExporter] No audio track found in WebM');
+        this.hasAudio = false;
+        return;
+      }
+
+      const audioInfo = await audioTrack.getDecoderConfig();
+      if (!audioInfo) {
+        console.warn('[VideoExporter] No audio decoder config found');
+        this.hasAudio = false;
+        return;
+      }
+      console.log('[VideoExporter] Audio track info:', audioInfo);
+
+      const sink = new EncodedPacketSink(audioTrack);
+      
+      const opusSupport = await AudioDecoder.isConfigSupported({
+        codec: 'opus',
+        sampleRate: audioInfo.sampleRate,
+        numberOfChannels: audioInfo.numberOfChannels,
+        description: audioInfo.description
+      });
+
+      if (!opusSupport.supported) {
+        console.warn('[VideoExporter] Opus decode not supported, disabling audio');
+        this.hasAudio = false;
+        return;
+      }
+
+      this.audioDecoder = new AudioDecoder({
+        output: (audioData) => {
+          if (this.audioEncoder && this.audioEncoder.state === 'configured') {
+            this.audioEncoder.encode(audioData);
+          }
+          audioData.close();
+        },
+        error: (e) => console.error('[VideoExporter] Audio decoder error:', e),
+      });
+
+      await this.audioDecoder.configure({
+        codec: 'opus',
+        sampleRate: audioInfo.sampleRate,
+        numberOfChannels: audioInfo.numberOfChannels,
+        description: audioInfo.description
+      });
+      console.log('[VideoExporter] Audio decoder configured');
+
+      let packetCount = 0;
+      for await (const packet of sink.packets()) {
+        if (this.cancelled) break;
+
+        const chunk = new EncodedAudioChunk({
+          type: 'delta',
+          timestamp: packet.timestamp * 1000000,
+          duration: packet.duration ? packet.duration * 1000000 : 0,
+          data: packet.data
+        });
+
+        this.audioDecoder.decode(chunk);
+        packetCount++;
+      }
+
+      console.log(`[VideoExporter] Decoded ${packetCount} audio packets, flushing...`);
+      await this.audioDecoder.flush();
+      
+      this.audioProcessingComplete = true;
+      console.log('[VideoExporter] Audio processing complete');
+    } catch (e) {
+      console.error('[VideoExporter] Audio demux/decode error:', e);
+      this.hasAudio = false;
+    }
   }
 
   cancel(): void {
@@ -457,6 +600,30 @@ export class VideoExporter {
       }
       this.encoder = null;
     }
+
+    if (this.audioEncoder) {
+      try {
+        if (this.audioEncoder.state === 'configured') {
+          this.audioEncoder.close();
+        }
+      } catch (e) {
+        console.warn('Error closing audio encoder:', e);
+      }
+      this.audioEncoder = null;
+    }
+
+    if (this.audioDecoder) {
+      try {
+        if (this.audioDecoder.state === 'configured') {
+          this.audioDecoder.close();
+        }
+      } catch (e) {
+        console.warn('Error closing audio decoder:', e);
+      }
+      this.audioDecoder = null;
+    }
+
+    this.audioProcessingComplete = false;
 
     if (this.decoder) {
       try {
