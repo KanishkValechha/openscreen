@@ -65,6 +65,7 @@ export default function VideoEditor() {
   const [gifFrameRate, setGifFrameRate] = useState<GifFrameRate>(15);
   const [gifLoop, setGifLoop] = useState(true);
   const [gifSizePreset, setGifSizePreset] = useState<GifSizePreset>('medium');
+  const [videoHasAudio, setVideoHasAudio] = useState(false);
 
   const videoPlaybackRef = useRef<VideoPlaybackRef>(null);
   const nextZoomIdRef = useRef(1);
@@ -605,6 +606,7 @@ export default function VideoEditor() {
           frameRate: 60,
           bitrate,
           codec: 'avc1.640033',
+          hasAudio: videoHasAudio,
           wallpaper,
           zoomRegions,
           trimRegions,
@@ -775,6 +777,7 @@ export default function VideoEditor() {
                       onSelectAnnotation={handleSelectAnnotation}
                       onAnnotationPositionChange={handleAnnotationPositionChange}
                       onAnnotationSizeChange={handleAnnotationSizeChange}
+                      onAudioTrackChange={setVideoHasAudio}
                     />
                   </div>
                 </div>

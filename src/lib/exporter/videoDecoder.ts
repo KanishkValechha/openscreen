@@ -4,7 +4,7 @@ export interface DecodedVideoInfo {
   duration: number; // in seconds
   frameRate: number;
   codec: string;
-  hasAudio: boolean;
+  hasAudio?: boolean;
 }
 
 export class VideoFileDecoder {
@@ -17,7 +17,7 @@ export class VideoFileDecoder {
     this.videoElement.preload = 'metadata';
 
     return new Promise((resolve, reject) => {
-      this.videoElement!.addEventListener('loadedmetadata', () => {
+      this.videoElement!.addEventListener('loadedmetadata', async () => {
         const video = this.videoElement!;
         
         // Check if video has audio

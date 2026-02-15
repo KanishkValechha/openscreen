@@ -218,9 +218,26 @@ export function registerIpcHandlers(
     return process.platform;
   });
 
+  ipcMain.handle('get-audio-devices', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 1, height: 1 }
+      });
+      return sources.map(source => ({
+        id: source.id,
+        name: source.name,
+        isSystemAudio: true
+      }));
+    } catch (error) {
+      console.error('Failed to get audio sources:', error);
+      return [];
+    }
+  });
+
   let audioPreferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string } = {
-    screenAudio: true,
-    micEnabled: true,
+    screenAudio: false,
+    micEnabled: false,
     micDeviceId: ''
   };
 

@@ -21,6 +21,7 @@ interface VideoPlaybackProps {
   currentTime: number;
   onPlayStateChange: (playing: boolean) => void;
   onError: (error: string) => void;
+  onAudioTrackChange?: (hasAudio: boolean) => void;
   wallpaper?: string;
   zoomRegions: ZoomRegion[];
   selectedZoomId: string | null;
@@ -60,6 +61,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   currentTime,
   onPlayStateChange,
   onError,
+  onAudioTrackChange,
   wallpaper,
   zoomRegions,
   selectedZoomId,
@@ -82,6 +84,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   onAnnotationSizeChange,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
   const videoSpriteRef = useRef<Sprite | null>(null);
@@ -218,6 +221,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
       try {
         allowPlaybackRef.current = true;
         await vid.play();
+        if (audioRef.current) {
+          audioRef.current.currentTime = vid.currentTime;
+          audioRef.current.play().catch(() => {});
+        }
       } catch (error) {
         allowPlaybackRef.current = false;
         throw error;
@@ -230,6 +237,9 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         return;
       }
       video.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     },
   }));
 
@@ -706,6 +716,15 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const video = e.currentTarget;
     onDurationChange(video.duration);
+    
+    // Check for audio tracks using HTMLMediaElement method
+    const hasAudio = (video as any).mozHasAudio || 
+                     (video as any).webkitAudioDecodedByteCount > 0 ||
+                     (video as any).audioTracks?.length > 0;
+    if (onAudioTrackChange) {
+      onAudioTrackChange(hasAudio);
+    }
+    
     video.currentTime = 0;
     video.pause();
     allowPlaybackRef.current = false;
@@ -782,6 +801,21 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
       }
     };
   }, [])
+
+  useEffect(() => {
+    if (!audioRef.current || !videoRef.current) return;
+    const audio = audioRef.current;
+    const video = videoRef.current;
+    
+    const handleTimeUpdate = () => {
+      if (Math.abs(audio.currentTime - video.currentTime) > 0.1) {
+        audio.currentTime = video.currentTime;
+      }
+    };
+    
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
+  }, [videoReady]);
 
   const isImageUrl = Boolean(resolvedWallpaper && (resolvedWallpaper.startsWith('file://') || resolvedWallpaper.startsWith('http') || resolvedWallpaper.startsWith('/') || resolvedWallpaper.startsWith('data:')))
   const backgroundStyle = isImageUrl
@@ -881,6 +915,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         }}
         onError={() => onError('Failed to load video')}
       />
+      <audio ref={audioRef} src={videoPath} className="hidden" />
     </div>
   );
 });

@@ -126,22 +126,17 @@ export class VideoExporter {
         throw new Error('Video element not available');
       }
 
-      // Try to initialize audio - even if hasAudio is false, try demuxing as fallback
-      // This handles cases where audio detection might fail
-      const audioInitResult = await this.initializeAudioEncoderWithFallback();
-      
-      // Start audio processing promise - will run in parallel with video
-      let audioProcessingPromise: Promise<void> | null = null;
-      
-      // Update hasAudio based on whether we successfully initialized audio
-      if (audioInitResult && this.muxer) {
-        this.hasAudio = true;
-        // Re-initialize muxer with audio if it wasn't already
-        this.muxer = new VideoMuxer(this.config, true);
-        await this.muxer.initialize();
-        
-        // Demux and decode audio in parallel with video encoding
-        audioProcessingPromise = this.processAudioDemuxDecode();
+      // If we have audio, extract and process it
+      // Note: Full audio trim support requires demuxing source WebM, decoding Opus to PCM,
+      // applying trim mapping, and re-encoding to AAC. For now, we skip audio when trims exist.
+      if (this.hasAudio) {
+        const hasTrims = this.config.trimRegions && this.config.trimRegions.length > 0;
+        if (!hasTrims) {
+          await this.processAudioWithoutTrims();
+        } else {
+          console.warn('[VideoExporter] Audio export disabled when trim regions exist');
+          this.hasAudio = false;
+        }
       }
 
       // Calculate effective duration and frame count (excluding trim regions)
@@ -397,20 +392,76 @@ export class VideoExporter {
     }
   }
 
-  private async initializeAudioEncoderWithFallback(): Promise<boolean> {
+  private audioEncoder: AudioEncoder | null = null;
+
+  private async processAudioWithoutTrims(): Promise<void> {
+    if (!this.hasAudio || !this.decoder) return;
+
+    const videoElement = this.decoder.getVideoElement();
+    if (!videoElement) return;
+
+    const audioStream = (videoElement as any).captureStream ? 
+      (videoElement as any).captureStream() : null;
+    
+    if (!audioStream) {
+      console.warn('[VideoExporter] Video does not support captureStream');
+      this.hasAudio = false;
+      return;
+    }
+
+    const audioTracks = audioStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.warn('[VideoExporter] No audio tracks found');
+      this.hasAudio = false;
+      return;
+    }
+
+    const audioOnlyStream = new MediaStream(audioTracks);
+    await this.initializeAudioEncoder();
+    
+    if (!this.audioEncoder) return;
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 
+      'audio/webm;codecs=opus' : 'audio/webm';
+
+    const mediaRecorder = new MediaRecorder(audioOnlyStream, {
+      mimeType,
+      audioBitsPerSecond: 128000,
+    });
+
+    const chunks: Blob[] = [];
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    mediaRecorder.start(100);
+
+    // Let audio collect for the duration of the export
+    const totalDuration = this.getEffectiveDuration(videoElement.duration);
+    await new Promise(resolve => setTimeout(resolve, totalDuration * 1000 + 500));
+
+    mediaRecorder.stop();
+  }
+
+  private async initializeAudioEncoder(): Promise<void> {
+    if (!this.hasAudio) return;
+
     const SAMPLE_RATE = 48000;
     const CHANNELS = 2;
 
     this.audioEncoder = new AudioEncoder({
       output: async (chunk, meta) => {
-        if (!this.muxer) return;
+        if (!this.muxer || !this.hasAudio) return;
+        
         try {
           await this.muxer.addAudioChunk(chunk, meta);
-        } catch (e) {
-          console.error('[VideoExporter] Audio muxing error:', e);
+        } catch (error) {
+          console.error('[VideoExporter] Audio muxing error:', error);
         }
       },
-      error: (e) => console.error('[VideoExporter] Audio encoder error:', e),
+      error: (error) => {
+        console.error('[VideoExporter] Audio encoder error:', error);
+      },
     });
 
     const audioConfig: AudioEncoderConfig = {
@@ -422,6 +473,16 @@ export class VideoExporter {
 
     const support = await AudioEncoder.isConfigSupported(audioConfig);
     if (!support.supported) {
+      console.warn('[VideoExporter] AAC encoding not supported');
+      this.hasAudio = false;
+      if (this.audioEncoder) {
+        this.audioEncoder.close();
+        this.audioEncoder = null;
+      }
+      return;
+    }
+
+    this.audioEncoder.configure(audioConfig);
       console.warn('[VideoExporter] AAC not supported, disabling audio');
       this.audioEncoder.close();
       this.audioEncoder = null;
@@ -580,6 +641,17 @@ export class VideoExporter {
         console.warn('Error destroying renderer:', e);
       }
       this.renderer = null;
+    }
+
+    if (this.audioEncoder) {
+      try {
+        if (this.audioEncoder.state === 'configured') {
+          this.audioEncoder.close();
+        }
+      } catch (e) {
+        console.warn('Error closing audio encoder:', e);
+      }
+      this.audioEncoder = null;
     }
 
     this.muxer = null;

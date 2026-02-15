@@ -12,6 +12,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
   const stream = useRef<MediaStream | null>(null);
   const chunks = useRef<Blob[]>([]);
   const startTime = useRef<number>(0);
+  const audioPreferences = useRef<{ screenAudio: boolean; micEnabled: boolean; micDeviceId: string }>({
+    screenAudio: false,
+    micEnabled: false,
+    micDeviceId: ""
+  });
 
   // Target visually lossless 4K @ 60fps; fall back gracefully when hardware cannot keep up
   const TARGET_FRAME_RATE = 60;

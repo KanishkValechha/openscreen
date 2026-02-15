@@ -42,6 +42,7 @@ interface Window {
     getPlatform: () => Promise<string>
     hudOverlayHide: () => void;
     hudOverlayClose: () => void;
+    getAudioDevices: () => Promise<{ id: string; name: string; isSystemAudio?: boolean }[]>
     saveAudioPreferences: (preferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string }) => Promise<{ success: boolean }>
     getAudioPreferences: () => Promise<{ screenAudio: boolean; micEnabled: boolean; micDeviceId: string }>
   }

@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => {
     return ipcRenderer.invoke('get-platform')
   },
+  getAudioDevices: async () => {
+    return await ipcRenderer.invoke('get-audio-devices')
+  },
   saveAudioPreferences: (preferences: { screenAudio: boolean; micEnabled: boolean; micDeviceId: string }) => {
     return ipcRenderer.invoke('save-audio-preferences', preferences)
   },
